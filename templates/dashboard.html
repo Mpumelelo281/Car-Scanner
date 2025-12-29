@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Parking Management System</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Navigation Bar -->
+        <nav class="navbar">
+            <div class="navbar-brand">
+                <span style="font-size: 28px;">🚗</span>
+                <span>Parking Management</span>
+            </div>
+            <div class="navbar-user">
+                <div class="user-info">
+                    <div class="user-name" id="userName">Loading...</div>
+                    <div class="user-role" id="userRole">Loading...</div>
+                </div>
+                <button id="logoutBtn" class="btn-logout">Logout</button>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Statistics Cards -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon primary">📊</div>
+                    </div>
+                    <div class="stat-value" id="totalCars">0</div>
+                    <div class="stat-label">Total Cars Today</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon success">✅</div>
+                    </div>
+                    <div class="stat-value" id="activeCars">0</div>
+                    <div class="stat-label">Active (&lt; 4 hours)</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon warning">⚠️</div>
+                    </div>
+                    <div class="stat-value" id="warningCars">0</div>
+                    <div class="stat-label">Warning (4-12 hours)</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon danger">🚨</div>
+                    </div>
+                    <div class="stat-value" id="overdueCars">0</div>
+                    <div class="stat-label">Overdue (12+ hours)</div>
+                </div>
+            </div>
+
+            <!-- Dashboard Content -->
+            <div id="dashboardContent">
+                <!-- Cars List -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">🚗 Parked Vehicles</h2>
+                        <div class="card-actions">
+                            <button onclick="exportExcel()" class="btn btn-success btn-sm">
+                                📥 Export Excel
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <!-- Filters -->
+                        <div class="filter-bar">
+                            <input type="date" id="dateFilter" class="filter-select">
+                            
+                            <select id="shiftFilter" class="filter-select">
+                                <option value="">All Shifts</option>
+                                <option value="1">Shift 1 (6AM-10AM)</option>
+                                <option value="2">Shift 2 (10AM-2PM)</option>
+                                <option value="3">Shift 3 (2PM-6PM)</option>
+                                <option value="4">Shift 4 (6PM-10PM)</option>
+                            </select>
+                            
+                            <select id="statusFilter" class="filter-select">
+                                <option value="">All Status</option>
+                                <option value="active">Active</option>
+                                <option value="warning">Warning</option>
+                                <option value="overdue">Overdue</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Cars Table -->
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Car ID</th>
+                                        <th>First Scan</th>
+                                        <th>Last Scan</th>
+                                        <th>Scans</th>
+                                        <th>Hours</th>
+                                        <th>Status</th>
+                                        <th>Worker</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="carsTableBody">
+                                    <tr>
+                                        <td colspan="7" class="loading">
+                                            <div class="spinner"></div>
+                                            Loading vehicles...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

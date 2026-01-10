@@ -29,15 +29,25 @@ SHIFTS = {
     1: {'start': 6, 'end': 10, 'name': '6AM-10AM'},
     2: {'start': 10, 'end': 14, 'name': '10AM-2PM'},
     3: {'start': 14, 'end': 18, 'name': '2PM-6PM'},
-    4: {'start': 18, 'end': 22, 'name': '6PM-10PM'}
+    4: {'start': 18, 'end': 22, 'name': '6PM-10PM'},
+    5: {'start': 22, 'end': 2, 'name': '10PM-2AM'}  # Overnight shift
 }
 
 def get_current_shift():
     hour = datetime.now().hour
+    
+    # Handle overnight shift (22:00 - 02:00)
+    if hour >= 22 or hour < 2:
+        return 5
+    
+    # Handle regular shifts
     for shift_num, times in SHIFTS.items():
-        if times['start'] <= hour < times['end']:
+        start = times['start']
+        end = times['end']
+        if start <= hour < end:
             return shift_num
-    return 1
+    
+    return 1  # Default to shift 1 if no match
 
 def token_required(f):
     @wraps(f)
@@ -139,33 +149,154 @@ def get_users(current_user):
 @token_required
 @role_required(['admin'])
 def create_user(current_user):
-    data = request.json
-    password_hash = bcrypt.hashpw('temp123'.encode(), bcrypt.gensalt()).decode()
-    
+    try:
+        data = request.json
+        print(f"DEBUG: Received data: {data}")
+        
+        # Validate required fields
+        username = data.get('username', '').strip()
+        full_name = data.get('full_name', '').strip()
+        role = data.get('role', '').strip()
+        
+        if not username or not full_name or not role:
+            return jsonify({'error': 'Username, full name, and role are required'}), 400
+        
+        # Validate role
+        if role not in ['worker', 'supervisor', 'admin']:
+            return jsonify({'error': f'Invalid role: {role}'}), 400
+        
+        password_hash = bcrypt.hashpw('temp123'.encode(), bcrypt.gensalt()).decode()
+        
+        conn = get_db()
+        cur = conn.cursor()
+        
+        try:
+            # Handle assigned_shift - convert empty/null to None
+            assigned_shift = data.get('assigned_shift')
+            if assigned_shift in [None, '', 'null', 'None']:
+                assigned_shift = None
+            else:
+                try:
+                    assigned_shift = int(assigned_shift)
+                except (ValueError, TypeError):
+                    assigned_shift = None
+            
+            # Handle supervisor_id - convert empty/null to None
+            supervisor_id = data.get('supervisor_id')
+            if supervisor_id in [None, '', 'null', 'None']:
+                supervisor_id = None
+            else:
+                try:
+                    supervisor_id = int(supervisor_id)
+                except (ValueError, TypeError):
+                    supervisor_id = None
+            
+            print(f"DEBUG: Inserting user - username={username}, role={role}, shift={assigned_shift}, supervisor={supervisor_id}")
+            
+            cur.execute('''
+                INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id
+            ''', (username, password_hash, role, full_name, assigned_shift, supervisor_id))
+            
+            user_id = cur.fetchone()['user_id']
+            conn.commit()
+            print(f"DEBUG: User created successfully - ID: {user_id}")
+            cur.close()
+            conn.close()
+            return jsonify({'message': 'User created successfully', 'user_id': user_id}), 201
+            
+        except psycopg.errors.UniqueViolation:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'Username already exists'}), 400
+        except Exception as e:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            print(f"DEBUG: Database error: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
+            
+    except Exception as e:
+        print(f"DEBUG: Error in create_user: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
+
+@app.route('/api/workers/<int:worker_id>/profile', methods=['GET'])
+@token_required
+def get_worker_profile(current_user, worker_id):
+    """Get detailed worker profile with statistics"""
     conn = get_db()
     cur = conn.cursor()
-    try:
-        cur.execute('''
-            INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id)
-            VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id
-        ''', (data['username'], password_hash, data['role'], data['full_name'], 
-              data.get('assigned_shift'), data.get('supervisor_id')))
-        user_id = cur.fetchone()['user_id']
-        conn.commit()
-        cur.close()
+    
+    # Get worker details
+    cur.execute('''
+        SELECT user_id, username, full_name, role, assigned_shift, 
+               phone, email, profile_image, date_joined, bio, total_scans, last_scan_date,
+               is_active
+        FROM users 
+        WHERE user_id = %s AND role = 'worker'
+    ''', (worker_id,))
+    
+    worker = cur.fetchone()
+    
+    if not worker:
         conn.close()
-        return jsonify({'message': 'User created', 'user_id': user_id}), 201
-    except psycopg.errors.UniqueViolation:
-        conn.rollback()
-        cur.close()
-        conn.close()
-        return jsonify({'error': 'Username already exists'}), 400
-    except Exception as e:
-        conn.rollback()
-        cur.close()
-        conn.close()
-        print(f"Error creating user: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Worker not found'}), 404
+    
+    # Get worker's scan statistics
+    today = datetime.now().date()
+    
+    # Today's scans
+    cur.execute('''
+        SELECT COUNT(*) as today_scans
+        FROM scans
+        WHERE worker_id = %s AND date = %s
+    ''', (worker_id, today))
+    today_stats = cur.fetchone()
+    
+    # This week's scans
+    cur.execute('''
+        SELECT COUNT(*) as week_scans
+        FROM scans
+        WHERE worker_id = %s AND date >= CURRENT_DATE - INTERVAL '7 days'
+    ''', (worker_id,))
+    week_stats = cur.fetchone()
+    
+    # Total unique cars scanned
+    cur.execute('''
+        SELECT COUNT(DISTINCT car_id) as unique_cars
+        FROM scans
+        WHERE worker_id = %s
+    ''', (worker_id,))
+    car_stats = cur.fetchone()
+    
+    # Recent activity (last 10 scans)
+    cur.execute('''
+        SELECT c.car_identifier, s.scan_time, s.shift_number
+        FROM scans s
+        JOIN cars c ON s.car_id = c.car_id
+        WHERE s.worker_id = %s
+        ORDER BY s.scan_time DESC
+        LIMIT 10
+    ''', (worker_id,))
+    recent_scans = cur.fetchall()
+    
+    conn.close()
+    
+    return jsonify({
+        'worker': dict(worker),
+        'stats': {
+            'today_scans': today_stats['today_scans'],
+            'week_scans': week_stats['week_scans'],
+            'total_scans': worker['total_scans'] or 0,
+            'unique_cars': car_stats['unique_cars']
+        },
+        'recent_activity': [dict(s) for s in recent_scans]
+    })
 
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 @token_required
@@ -278,7 +409,10 @@ def get_cars(current_user):
                (SELECT u.full_name FROM scans s 
                 JOIN users u ON s.worker_id = u.user_id 
                 WHERE s.car_id = c.car_id 
-                ORDER BY s.scan_time DESC LIMIT 1) as last_worker
+                ORDER BY s.scan_time DESC LIMIT 1) as last_worker,
+               (SELECT s.worker_id FROM scans s 
+                WHERE s.car_id = c.car_id 
+                ORDER BY s.scan_time DESC LIMIT 1) as last_worker_id
         FROM cars c
         WHERE c.date = %s AND c.is_active = TRUE
     '''
@@ -322,18 +456,15 @@ def get_dashboard(current_user):
             WHERE s.shift_number = %s AND s.date = %s AND s.worker_id = %s
         ''', (current_user['assigned_shift'], today, current_user['user_id']))
     elif current_user['role'] == 'supervisor':
+        # Supervisors see ALL cars (not just their team)
         cur.execute('''
             SELECT 
-                COUNT(DISTINCT c.car_id) as total_cars,
-                COUNT(DISTINCT CASE WHEN c.status = 'overdue' THEN c.car_id END) as overdue_cars,
-                COUNT(DISTINCT CASE WHEN c.status = 'warning' THEN c.car_id END) as warning_cars,
-                COUNT(DISTINCT CASE WHEN c.status = 'active' THEN c.car_id END) as active_cars,
-                COUNT(s.scan_id) as total_scans
-            FROM cars c
-            JOIN scans s ON c.car_id = s.car_id
-            JOIN users u ON s.worker_id = u.user_id
-            WHERE s.date = %s AND u.supervisor_id = %s
-        ''', (today, current_user['user_id']))
+                COUNT(DISTINCT car_id) as total_cars,
+                COUNT(DISTINCT CASE WHEN status = 'overdue' THEN car_id END) as overdue_cars,
+                COUNT(DISTINCT CASE WHEN status = 'warning' THEN car_id END) as warning_cars,
+                COUNT(DISTINCT CASE WHEN status = 'active' THEN car_id END) as active_cars
+            FROM cars WHERE date = %s AND is_active = TRUE
+        ''', (today,))
     else:
         cur.execute('''
             SELECT 
@@ -393,7 +524,7 @@ def export_excel(current_user):
     ws.title = "Parking Report"
     
     headers = ['Car ID', 'First Scan', 'Last Scan', 'Scans', 'Hours Parked', 
-               'Status', 'Worker', 'Shift', 'Date']
+               'Status', 'Overdue By', 'Worker', 'Shift', 'Date']
     ws.append(headers)
     
     header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
@@ -406,25 +537,46 @@ def export_excel(current_user):
     
     for row in data:
         status_display = row['status'].upper()
+        first_scan_time = row['first_scan_time'].strftime('%I:%M %p')  # 10:30 AM
+        last_scan_time = row['last_scan_time'].strftime('%I:%M %p')   # 02:45 PM
+        
+        # Calculate overdue time
+        overdue_display = ''
+        if row['hours_parked'] >= 12:
+            total_hours = int(row['hours_parked'])
+            hours = total_hours
+            minutes = int((row['hours_parked'] - total_hours) * 60)
+            overdue_display = f"🚨 {hours}h {minutes}m"
+        elif row['hours_parked'] >= 4:
+            total_hours = int(row['hours_parked'])
+            hours = total_hours
+            minutes = int((row['hours_parked'] - total_hours) * 60)
+            overdue_display = f"⚠️ {hours}h {minutes}m"
+        
         ws.append([
             row['car_identifier'],
-            row['first_scan_time'].strftime('%Y-%m-%d %H:%M:%S'),
-            row['last_scan_time'].strftime('%Y-%m-%d %H:%M:%S'),
+            first_scan_time,
+            last_scan_time,
             f"{row['scan_count']}x",
             f"{row['hours_parked']:.1f}h",
             status_display,
+            overdue_display,
             row['worker_name'],
             f"Shift {row['shift_number']}",
             str(row['date'])
         ])
     
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
-        status = row[5].value
-        if 'OVERDUE' in status:
+        status = row[5].value  # Status column
+        overdue_col = row[6].value  # Overdue By column
+        
+        if 'OVERDUE' in status or (overdue_col and '🚨' in str(overdue_col)):
+            # 12+ hours overdue - RED with flag
             for cell in row:
                 cell.fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
                 cell.font = Font(color='FFFFFF', bold=True)
-        elif 'WARNING' in status:
+        elif 'WARNING' in status or (overdue_col and '⚠️' in str(overdue_col)):
+            # 4-12 hours warning - ORANGE
             for cell in row:
                 cell.fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
     
@@ -451,4 +603,4 @@ def export_excel(current_user):
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=True, host='0.0.0.0', port=5000)

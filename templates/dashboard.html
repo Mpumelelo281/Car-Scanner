@@ -40,7 +40,7 @@
                         <div class="stat-icon success">✅</div>
                     </div>
                     <div class="stat-value" id="activeCars">0</div>
-                    <div class="stat-label">Active (&lt; 4 hours)</div>
+                    <div class="stat-label">Active (< 4 hours)</div>
                 </div>
                 
                 <div class="stat-card">
@@ -67,8 +67,24 @@
                     <div class="card-header">
                         <h2 class="card-title">🚗 Parked Vehicles</h2>
                         <div class="card-actions">
-                            <button onclick="exportExcel()" class="btn btn-success btn-sm">
-                                📥 Export Excel
+                            <button onclick="exportExcel()" style="
+                                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+                                color: white;
+                                border: none;
+                                padding: 14px 28px;
+                                font-size: 16px;
+                                font-weight: 600;
+                                border-radius: 12px;
+                                cursor: pointer;
+                                box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+                                transition: all 0.3s;
+                                display: flex;
+                                align-items: center;
+                                gap: 8px;
+                            " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(16, 185, 129, 0.4)'"
+                               onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(16, 185, 129, 0.3)'">
+                                <span style="font-size: 20px;">📥</span>
+                                <span>Export Excel</span>
                             </button>
                         </div>
                     </div>
@@ -83,6 +99,7 @@
                                 <option value="2">Shift 2 (10AM-2PM)</option>
                                 <option value="3">Shift 3 (2PM-6PM)</option>
                                 <option value="4">Shift 4 (6PM-10PM)</option>
+                                <option value="5">Shift 5 (10PM-2AM)</option>
                             </select>
                             
                             <select id="statusFilter" class="filter-select">
@@ -104,6 +121,7 @@
                                         <th>Scans</th>
                                         <th>Hours</th>
                                         <th>Status</th>
+                                        <th>Overdue By</th>
                                         <th>Worker</th>
                                     </tr>
                                 </thead>
@@ -121,6 +139,11 @@
                 </div>
             </div>
         </div>
+    </div>
+    
+    <!-- Footer -->
+    <div class="footer">
+        <div class="footer-text">© 2026 M Scanner - Parking Management System</div>
     </div>
     
     <script src="/static/js/app.js"></script>

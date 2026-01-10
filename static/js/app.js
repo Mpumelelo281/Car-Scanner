@@ -63,11 +63,9 @@ async function apiCall(endpoint, options = {}) {
 function formatDateTime(dateString) {
     const date = new Date(dateString);
     return date.toLocaleString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
         hour: '2-digit',
-        minute: '2-digit'
+        minute: '2-digit',
+        hour12: true
     });
 }
 
@@ -91,7 +89,8 @@ function getStatusBadgeClass(status) {
 }
 
 function calculateHoursParked(firstScan, lastScan) {
-    const diff = new Date(lastScan) - new Date(firstScan);
+    // Calculate hours from FIRST scan to NOW (not to last scan)
+    const diff = new Date() - new Date(firstScan);
     return (diff / (1000 * 60 * 60)).toFixed(1);
 }
 
@@ -163,13 +162,19 @@ async function loadDashboardData() {
     try {
         const data = await apiCall('/dashboard');
         
-        document.getElementById('totalCars').textContent = data.total_cars || 0;
-        document.getElementById('activeCars').textContent = data.active_cars || 0;
-        document.getElementById('warningCars').textContent = data.warning_cars || 0;
-        document.getElementById('overdueCars').textContent = data.overdue_cars || 0;
+        const totalCarsEl = document.getElementById('totalCars');
+        const activeCarsEl = document.getElementById('activeCars');
+        const warningCarsEl = document.getElementById('warningCars');
+        const overdueCarsEl = document.getElementById('overdueCars');
+        
+        if (totalCarsEl) totalCarsEl.textContent = data.total_cars || 0;
+        if (activeCarsEl) activeCarsEl.textContent = data.active_cars || 0;
+        if (warningCarsEl) warningCarsEl.textContent = data.warning_cars || 0;
+        if (overdueCarsEl) overdueCarsEl.textContent = data.overdue_cars || 0;
         
         if (currentUser.role !== 'worker') {
-            document.getElementById('activeWorkers').textContent = data.active_workers || 0;
+            const activeWorkersEl = document.getElementById('activeWorkers');
+            if (activeWorkersEl) activeWorkersEl.textContent = data.active_workers || 0;
         }
     } catch (error) {
         console.error('Failed to load dashboard data:', error);
@@ -181,6 +186,8 @@ async function loadCars() {
     const status = document.getElementById('statusFilter')?.value || '';
     const date = document.getElementById('dateFilter')?.value || new Date().toISOString().split('T')[0];
     
+    console.log('Loading cars with filters:', { shift, status, date });
+    
     const params = new URLSearchParams();
     if (shift) params.append('shift', shift);
     if (status) params.append('status', status);
@@ -188,22 +195,52 @@ async function loadCars() {
     
     try {
         const cars = await apiCall(`/cars?${params}`);
+        console.log('Cars loaded:', cars);
         displayCars(cars);
     } catch (error) {
         console.error('Failed to load cars:', error);
+        const tbody = document.getElementById('carsTableBody');
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #ef4444;">Error loading cars. Please refresh the page.</td></tr>';
+        }
     }
 }
 
 function displayCars(cars) {
     const tbody = document.getElementById('carsTableBody');
     
+    console.log('Displaying cars:', cars ? cars.length : 0);
+    
+    if (!tbody) {
+        console.error('Table body not found!');
+        return;
+    }
+    
     if (!cars || cars.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #6b7280;">No cars found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #6b7280;">No cars found for selected filters</td></tr>';
         return;
     }
     
     tbody.innerHTML = cars.map(car => {
         const hoursParked = calculateHoursParked(car.first_scan_time, car.last_scan_time);
+        
+        // Calculate overdue time display
+        let overdueDisplay = '';
+        if (hoursParked >= 12) {
+            const hours = Math.floor(hoursParked);
+            const minutes = Math.floor((hoursParked - hours) * 60);
+            overdueDisplay = `<span style="color: #ef4444; font-weight: bold;">🚨 ${hours}h ${minutes}m</span>`;
+        } else if (hoursParked >= 4) {
+            const hours = Math.floor(hoursParked);
+            const minutes = Math.floor((hoursParked - hours) * 60);
+            overdueDisplay = `<span style="color: #f59e0b; font-weight: bold;">⚠️ ${hours}h ${minutes}m</span>`;
+        }
+        
+        // Make worker name clickable if available
+        const workerDisplay = car.last_worker_id 
+            ? `<a href="#" onclick="showWorkerProfile(${car.last_worker_id}); return false;" style="color: #6366f1; text-decoration: none; font-weight: 600;">${car.last_worker || 'N/A'}</a>`
+            : (car.last_worker || 'N/A');
+        
         return `
             <tr>
                 <td><strong>${car.car_identifier}</strong></td>
@@ -212,41 +249,108 @@ function displayCars(cars) {
                 <td><strong>${car.scan_count}x</strong></td>
                 <td>${hoursParked}h</td>
                 <td><span class="badge ${getStatusBadgeClass(car.status)}">${car.status}</span></td>
-                <td>${car.last_worker || 'N/A'}</td>
+                <td>${overdueDisplay || '-'}</td>
+                <td>${workerDisplay}</td>
             </tr>
         `;
     }).join('');
+    
+    console.log('Cars displayed successfully');
 }
 
 function showScannerSection() {
+    // For workers: Reorganize layout - scanner at top left, stats below in grid
+    const mainContent = document.querySelector('.main-content');
+    const statsGrid = document.querySelector('.stats-grid');
+    
+    // Hide original stats temporarily
+    if (statsGrid) {
+        statsGrid.style.display = 'none';
+    }
+    
     const scannerHTML = `
-        <div class="card scanner-container">
-            <div class="card-header">
-                <h2 class="card-title">🔍 Scan Vehicle</h2>
-            </div>
-            <div class="card-body">
-                <div class="scanner-box">
-                    <h3 style="margin-bottom: 16px;">Enter or Scan Car ID</h3>
-                    <div class="scanner-input-group">
-                        <input type="text" id="manualCarId" class="scanner-input" 
-                               placeholder="Enter Car ID or Barcode" autofocus>
-                        <button onclick="scanManually()" class="btn btn-primary btn-sm">Scan</button>
+        <div style="display: grid; grid-template-columns: 1fr; gap: 24px; margin-bottom: 24px;">
+            <!-- Scanner Box - Prominent at Top -->
+            <div class="card" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); border: none;">
+                <div class="card-header" style="background: transparent; border: none; padding: 24px 28px;">
+                    <h2 class="card-title" style="color: white; font-size: 24px; margin: 0;">🔍 Scan Vehicle</h2>
+                </div>
+                <div class="card-body" style="padding: 0 28px 28px 28px;">
+                    <div style="background: rgba(255,255,255,0.15); backdrop-filter: blur(10px); border-radius: 16px; padding: 32px;">
+                        <h3 style="margin-bottom: 20px; font-size: 18px; color: white; font-weight: 600;">Enter or Scan Car ID</h3>
+                        <div style="display: flex; gap: 12px;">
+                            <input type="text" id="manualCarId" 
+                                   placeholder="Enter Car ID or Barcode" 
+                                   autofocus 
+                                   style="flex: 1; padding: 18px; font-size: 18px; border: 3px solid rgba(255,255,255,0.3); border-radius: 12px; background: white; font-weight: 600; text-transform: uppercase;">
+                            <button onclick="scanManually()" 
+                                    style="padding: 18px 40px; font-size: 18px; font-weight: bold; background: white; color: #059669; border: none; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: all 0.2s;">
+                                🚀 SCAN
+                            </button>
+                        </div>
+                        <div id="scanResult" style="display: none; margin-top: 20px; padding: 16px; border-radius: 12px; background: rgba(255,255,255,0.95); color: #059669; font-weight: 600; font-size: 16px;"></div>
+                        <p style="margin-top: 24px; font-size: 14px; color: rgba(255,255,255,0.9); text-align: center;">
+                            💡 Tip: Use your phone camera to scan QR codes or barcodes
+                        </p>
                     </div>
-                    <div id="scanResult" style="display: none;" class="scan-result"></div>
-                    <p style="margin-top: 20px; font-size: 14px; opacity: 0.8;">
-                        Tip: Use your phone camera to scan QR codes or barcodes, then enter the code above
-                    </p>
+                </div>
+            </div>
+            
+            <!-- Stats Grid Below Scanner -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon primary">📊</div>
+                    </div>
+                    <div class="stat-value" id="totalCars">0</div>
+                    <div class="stat-label">Total Cars Today</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon success">✅</div>
+                    </div>
+                    <div class="stat-value" id="activeCars">0</div>
+                    <div class="stat-label">Active (< 4 hours)</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon warning">⚠️</div>
+                    </div>
+                    <div class="stat-value" id="warningCars">0</div>
+                    <div class="stat-label">Warning (4-12 hours)</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <div class="stat-icon danger">🚨</div>
+                    </div>
+                    <div class="stat-value" id="overdueCars">0</div>
+                    <div class="stat-label">Overdue (12+ hours)</div>
                 </div>
             </div>
         </div>
     `;
     
-    document.getElementById('dashboardContent').insertAdjacentHTML('afterbegin', scannerHTML);
+    // Insert at the very beginning
+    mainContent.insertAdjacentHTML('afterbegin', scannerHTML);
     
     document.getElementById('manualCarId').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             scanManually();
         }
+    });
+    
+    // Add hover effect to scan button
+    const scanBtn = document.querySelector('button[onclick="scanManually()"]');
+    scanBtn.addEventListener('mouseenter', () => {
+        scanBtn.style.transform = 'scale(1.05)';
+        scanBtn.style.boxShadow = '0 6px 16px rgba(0,0,0,0.3)';
+    });
+    scanBtn.addEventListener('mouseleave', () => {
+        scanBtn.style.transform = 'scale(1)';
+        scanBtn.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
     });
 }
 
@@ -293,7 +397,37 @@ async function exportExcel() {
     if (shift) params.append('shift', shift);
     params.append('date', date);
     
-    window.location.href = `${API_URL}/export?${params}&token=${getToken()}`;
+    try {
+        const token = getToken();
+        const response = await fetch(`${API_URL}/export?${params}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error('Export failed');
+        }
+        
+        // Get the blob
+        const blob = await response.blob();
+        
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `parking_report_${date}${shift ? '_shift' + shift : ''}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        console.log('Excel exported successfully');
+    } catch (error) {
+        console.error('Export error:', error);
+        alert('Failed to export: ' + error.message);
+    }
 }
 
 // User Management
@@ -303,8 +437,24 @@ async function showUserManagement() {
             <div class="card-header">
                 <h2 class="card-title">👥 User Management</h2>
                 <div class="card-actions">
-                    <button onclick="showAddUserModal()" class="btn btn-primary btn-sm">
-                        ➕ Add User
+                    <button onclick="showAddUserModal()" style="
+                        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+                        color: white;
+                        border: none;
+                        padding: 14px 28px;
+                        font-size: 16px;
+                        font-weight: 600;
+                        border-radius: 12px;
+                        cursor: pointer;
+                        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+                        transition: all 0.3s;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(99, 102, 241, 0.4)'"
+                       onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(99, 102, 241, 0.3)'">
+                        <span style="font-size: 20px;">➕</span>
+                        <span>Add User</span>
                     </button>
                 </div>
             </div>
@@ -380,15 +530,16 @@ async function showUserManagement() {
     loadUsers();
     loadSupervisors();
     
+    // Add form submit event listener
+    document.getElementById('userForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await saveUser();
+    });
+    
     document.getElementById('userRole').addEventListener('change', (e) => {
         const isWorker = e.target.value === 'worker';
         document.getElementById('shiftGroup').style.display = isWorker ? 'block' : 'none';
         document.getElementById('supervisorGroup').style.display = isWorker ? 'block' : 'none';
-    });
-    
-    document.getElementById('userForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        await saveUser();
     });
 }
 
@@ -447,25 +598,65 @@ function closeUserModal() {
 }
 
 async function saveUser() {
+    // Get form element
+    const form = document.getElementById('userForm');
+    
+    // Get values directly from form
+    const username = form.querySelector('#userUsername').value.trim();
+    const fullName = form.querySelector('#userFullName').value.trim();
+    const role = form.querySelector('#userRole').value;
+    const shift = form.querySelector('#userShift').value;
+    const supervisor = form.querySelector('#userSupervisor').value;
+    
+    console.log('Raw form values:', {
+        username: username,
+        fullName: fullName,
+        role: role,
+        shift: shift,
+        supervisor: supervisor
+    });
+    
+    // Build userData object
     const userData = {
-        username: document.getElementById('userUsername').value,
-        full_name: document.getElementById('userFullName').value,
-        role: document.getElementById('userRole').value,
-        assigned_shift: document.getElementById('userShift').value || null,
-        supervisor_id: document.getElementById('userSupervisor').value || null
+        username: username,
+        full_name: fullName,
+        role: role,
+        assigned_shift: shift || null,
+        supervisor_id: supervisor || null
     };
     
+    console.log('Prepared user data:', JSON.stringify(userData, null, 2));
+    
+    // Simple validation
+    if (!username) {
+        alert('Username is required');
+        return;
+    }
+    
+    if (!fullName) {
+        alert('Full Name is required');
+        return;
+    }
+    
+    if (!role) {
+        alert('Role is required - please select Worker or Supervisor');
+        return;
+    }
+    
     try {
-        await apiCall('/users', {
+        console.log('Calling API with:', userData);
+        const response = await apiCall('/users', {
             method: 'POST',
             body: JSON.stringify(userData)
         });
         
+        console.log('Success! Response:', response);
         closeUserModal();
         loadUsers();
-        alert('User created successfully! Default password: temp123');
+        alert('✅ User created successfully!\nUsername: ' + username + '\nPassword: temp123');
     } catch (error) {
-        alert('Failed to create user: ' + error.message);
+        console.error('Error creating user:', error);
+        alert('❌ Failed to create user: ' + error.message);
     }
 }
 
@@ -484,4 +675,93 @@ async function toggleUserStatus(userId, currentStatus) {
 // Set today's date as default
 if (document.getElementById('dateFilter')) {
     document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+}
+
+// Worker Profile Modal
+async function showWorkerProfile(workerId) {
+    try {
+        const data = await apiCall(`/workers/${workerId}/profile`);
+        
+        const worker = data.worker;
+        const stats = data.stats;
+        const recentActivity = data.recent_activity;
+        
+        // Create profile modal HTML
+        const profileHTML = `
+            <div class="modal active" id="workerProfileModal" style="z-index: 2000;">
+                <div class="modal-content" style="max-width: 600px;">
+                    <div class="modal-header" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; padding: 24px;">
+                        <div style="display: flex; align-items: center; gap: 20px;">
+                            <img src="${worker.profile_image || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(worker.full_name) + '&size=200&background=6366f1&color=fff&bold=true'}" 
+                                 alt="${worker.full_name}" 
+                                 style="width: 80px; height: 80px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+                            <div style="flex: 1;">
+                                <h2 style="margin: 0 0 8px 0; font-size: 24px;">${worker.full_name}</h2>
+                                <p style="margin: 0; opacity: 0.9; font-size: 14px;">
+                                    ${worker.role.charAt(0).toUpperCase() + worker.role.slice(1)} - Shift ${worker.assigned_shift}
+                                </p>
+                            </div>
+                            <button onclick="closeWorkerProfile()" style="background: rgba(255,255,255,0.2); border: none; color: white; font-size: 28px; cursor: pointer; padding: 4px 12px; border-radius: 8px; line-height: 1;">×</button>
+                        </div>
+                    </div>
+                    
+                    <div style="padding: 24px;">
+                        <!-- Statistics -->
+                        <div style="margin-bottom: 24px;">
+                            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">📊 Performance Statistics</h3>
+                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+                                <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.today_scans}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Today</p>
+                                </div>
+                                <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.week_scans}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">This Week</p>
+                                </div>
+                                <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.total_scans}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Total</p>
+                                </div>
+                                <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.unique_cars}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Cars</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Recent Activity -->
+                        <div>
+                            <h3 style="font-size: 16px; margin-bottom: 12px; color: #1e293b;">🔍 Recent Activity</h3>
+                            <div style="max-height: 180px; overflow-y: auto; background: #f8fafc; border-radius: 12px; padding: 12px;">
+                                ${recentActivity.length > 0 ? recentActivity.map(scan => `
+                                    <div style="display: flex; justify-content: space-between; padding: 10px; background: white; border-radius: 8px; margin-bottom: 6px;">
+                                        <span style="font-weight: 600; color: #0f172a;">🚗 ${scan.car_identifier}</span>
+                                        <span style="color: #64748b; font-size: 13px;">${new Date(scan.scan_time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                                    </div>
+                                `).join('') : '<p style="text-align: center; color: #94a3b8; padding: 20px;">No recent activity</p>'}
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 20px; text-align: center;">
+                            <button onclick="closeWorkerProfile()" class="btn btn-secondary" style="padding: 10px 32px;">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Insert modal
+        document.body.insertAdjacentHTML('beforeend', profileHTML);
+        
+    } catch (error) {
+        console.error('Error loading worker profile:', error);
+        alert('Failed to load worker profile: ' + error.message);
+    }
+}
+
+function closeWorkerProfile() {
+    const modal = document.getElementById('workerProfileModal');
+    if (modal) {
+        modal.remove();
+    }
 }

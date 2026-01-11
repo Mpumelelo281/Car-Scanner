@@ -595,8 +595,18 @@ function displayUsers(users) {
     
     tbody.innerHTML = users.map(user => `
         <tr>
-            <td>${user.username}</td>
-            <td>${user.full_name}</td>
+            <td>
+                <a href="#" onclick="showUserProfile(${user.user_id}, '${user.role}'); return false;" 
+                   style="color: #6366f1; text-decoration: none; font-weight: 600;">
+                    ${user.username}
+                </a>
+            </td>
+            <td>
+                <a href="#" onclick="showUserProfile(${user.user_id}, '${user.role}'); return false;" 
+                   style="color: #6366f1; text-decoration: none; font-weight: 600;">
+                    ${user.full_name}
+                </a>
+            </td>
             <td><span class="badge badge-${user.role === 'admin' ? 'danger' : 'success'}">${user.role}</span></td>
             <td>${user.assigned_shift ? `Shift ${user.assigned_shift}` : '-'}</td>
             <td>${user.supervisor_name || '-'}</td>
@@ -801,5 +811,169 @@ function closeWorkerProfile() {
     const modal = document.getElementById('workerProfileModal');
     if (modal) {
         modal.remove();
+    }
+}
+
+// Universal User Profile (Workers, Supervisors, Admins)
+async function showUserProfile(userId, userRole) {
+    try {
+        // Use different endpoint based on role
+        let data;
+        if (userRole === 'worker') {
+            data = await apiCall(`/workers/${userId}/profile`);
+        } else {
+            // For supervisors and admins, get basic info
+            const users = await apiCall('/users');
+            const user = users.find(u => u.user_id === userId);
+            
+            if (!user) {
+                alert('User not found');
+                return;
+            }
+            
+            // Build data structure similar to worker profile
+            data = {
+                worker: {
+                    user_id: user.user_id,
+                    username: user.username,
+                    full_name: user.full_name,
+                    role: user.role,
+                    assigned_shift: user.assigned_shift,
+                    is_active: user.is_active,
+                    profile_image: `https://ui-avatars.com/api/?name=${encodeURIComponent(user.full_name)}&size=200&background=${userRole === 'supervisor' ? '8b5cf6' : 'ef4444'}&color=fff&bold=true`
+                },
+                stats: {
+                    today_scans: 0,
+                    week_scans: 0,
+                    total_scans: 0,
+                    unique_cars: 0
+                },
+                recent_activity: []
+            };
+            
+            // For supervisors, get their team stats
+            if (userRole === 'supervisor') {
+                // Get workers under this supervisor
+                const workers = users.filter(u => u.supervisor_id === userId && u.role === 'worker');
+                data.team_size = workers.length;
+            }
+        }
+        
+        const worker = data.worker;
+        const stats = data.stats;
+        const recentActivity = data.recent_activity;
+        
+        // Role-specific emoji and color
+        const roleEmoji = worker.role === 'admin' ? '👑' : worker.role === 'supervisor' ? '👨‍💼' : '👷';
+        const roleColor = worker.role === 'admin' ? '#ef4444' : worker.role === 'supervisor' ? '#8b5cf6' : '#10b981';
+        
+        // Create profile modal HTML
+        const profileHTML = `
+            <div class="modal active" id="workerProfileModal" style="z-index: 2000;">
+                <div class="modal-content" style="max-width: 600px;">
+                    <div class="modal-header" style="background: linear-gradient(135deg, ${roleColor} 0%, ${roleColor}dd 100%); color: white; padding: 24px;">
+                        <div style="display: flex; align-items: center; gap: 20px;">
+                            <img src="${worker.profile_image}" 
+                                 alt="${worker.full_name}" 
+                                 style="width: 80px; height: 80px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+                            <div style="flex: 1;">
+                                <h2 style="margin: 0 0 8px 0; font-size: 24px;">${roleEmoji} ${worker.full_name}</h2>
+                                <p style="margin: 0; opacity: 0.9; font-size: 14px;">
+                                    ${worker.role.charAt(0).toUpperCase() + worker.role.slice(1)}${worker.assigned_shift ? ` - Shift ${worker.assigned_shift}` : ''}
+                                </p>
+                            </div>
+                            <button onclick="closeWorkerProfile()" style="background: rgba(255,255,255,0.2); border: none; color: white; font-size: 28px; cursor: pointer; padding: 4px 12px; border-radius: 8px; line-height: 1;">×</button>
+                        </div>
+                    </div>
+                    
+                    <div style="padding: 24px;">
+                        ${worker.role === 'worker' ? `
+                        <!-- Statistics for Workers -->
+                        <div style="margin-bottom: 24px;">
+                            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">📊 Performance Statistics</h3>
+                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+                                <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.today_scans}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Today</p>
+                                </div>
+                                <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.week_scans}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">This Week</p>
+                                </div>
+                                <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.total_scans}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Total</p>
+                                </div>
+                                <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
+                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.unique_cars}</p>
+                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Cars</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Recent Activity -->
+                        <div>
+                            <h3 style="font-size: 16px; margin-bottom: 12px; color: #1e293b;">🔍 Recent Activity</h3>
+                            <div style="max-height: 180px; overflow-y: auto; background: #f8fafc; border-radius: 12px; padding: 12px;">
+                                ${recentActivity.length > 0 ? recentActivity.map(scan => `
+                                    <div style="display: flex; justify-content: space-between; padding: 10px; background: white; border-radius: 8px; margin-bottom: 6px;">
+                                        <span style="font-weight: 600; color: #0f172a;">🚗 ${scan.car_identifier}</span>
+                                        <span style="color: #64748b; font-size: 13px;">${new Date(scan.scan_time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                                    </div>
+                                `).join('') : '<p style="text-align: center; color: #94a3b8; padding: 20px;">No recent activity</p>'}
+                            </div>
+                        </div>
+                        ` : worker.role === 'supervisor' ? `
+                        <!-- Info for Supervisors -->
+                        <div style="margin-bottom: 24px;">
+                            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">👥 Supervisor Information</h3>
+                            <div style="background: #f8fafc; padding: 20px; border-radius: 12px;">
+                                <div style="margin-bottom: 12px;">
+                                    <span style="color: #64748b; font-size: 14px;">Username:</span>
+                                    <span style="font-weight: 600; color: #0f172a; margin-left: 8px;">${worker.username}</span>
+                                </div>
+                                <div style="margin-bottom: 12px;">
+                                    <span style="color: #64748b; font-size: 14px;">Role:</span>
+                                    <span style="font-weight: 600; color: #8b5cf6; margin-left: 8px;">Supervisor</span>
+                                </div>
+                                ${data.team_size !== undefined ? `
+                                <div>
+                                    <span style="color: #64748b; font-size: 14px;">Team Size:</span>
+                                    <span style="font-weight: 600; color: #0f172a; margin-left: 8px;">${data.team_size} workers</span>
+                                </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                        ` : `
+                        <!-- Info for Admins -->
+                        <div style="margin-bottom: 24px;">
+                            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">👑 Administrator Information</h3>
+                            <div style="background: #f8fafc; padding: 20px; border-radius: 12px;">
+                                <div style="margin-bottom: 12px;">
+                                    <span style="color: #64748b; font-size: 14px;">Username:</span>
+                                    <span style="font-weight: 600; color: #0f172a; margin-left: 8px;">${worker.username}</span>
+                                </div>
+                                <div>
+                                    <span style="color: #64748b; font-size: 14px;">Access Level:</span>
+                                    <span style="font-weight: 600; color: #ef4444; margin-left: 8px;">Full System Access</span>
+                                </div>
+                            </div>
+                        </div>
+                        `}
+                        
+                        <div style="margin-top: 20px; text-align: center;">
+                            <button onclick="closeWorkerProfile()" class="btn btn-secondary" style="padding: 10px 32px;">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Insert modal
+        document.body.insertAdjacentHTML('beforeend', profileHTML);
+        
+    } catch (error) {
+        console.error('Error loading user profile:', error);
+        alert('Failed to load profile: ' + error.message);
     }
 }

@@ -370,10 +370,48 @@ async function scanManually() {
             body: JSON.stringify({ car_identifier: carId })
         });
         
-        resultDiv.innerHTML = `
-            ✅ ${data.message}<br>
-            <small>Car: ${data.car.car_identifier} | Scans: ${data.car.scan_count}x</small>
+        // Build result message
+        let resultHTML = `
+            <div style="padding: 16px; border-radius: 8px;">
+                <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">
+                    ✅ ${data.message}
+                </div>
+                <div style="font-size: 14px; margin-bottom: 8px;">
+                    Car: <strong>${data.car.car_identifier}</strong> | 
+                    Scans: <strong>${data.car.scan_count}x</strong> | 
+                    Status: <strong>${data.car.status.toUpperCase()}</strong>
+                </div>
         `;
+        
+        // Show previous scans by other workers
+        if (data.previous_scans && data.previous_scans.length > 0) {
+            resultHTML += `
+                <div style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.2); border-radius: 8px; border-left: 4px solid #fbbf24;">
+                    <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #92400e;">
+                        ℹ️ Previously scanned by:
+                    </div>
+            `;
+            
+            data.previous_scans.forEach(scan => {
+                resultHTML += `
+                    <div style="font-size: 12px; margin-bottom: 4px; color: #78350f;">
+                        • <strong>${scan.worker}</strong> (Shift ${scan.shift}) - ${scan.time_ago}
+                    </div>
+                `;
+            });
+            
+            resultHTML += `</div>`;
+        } else if (data.is_new) {
+            resultHTML += `
+                <div style="margin-top: 8px; font-size: 13px; color: #065f46; font-weight: 600;">
+                    🆕 First time scanning this car today!
+                </div>
+            `;
+        }
+        
+        resultHTML += `</div>`;
+        
+        resultDiv.innerHTML = resultHTML;
         resultDiv.style.display = 'block';
         input.value = '';
         input.focus();
@@ -383,7 +421,7 @@ async function scanManually() {
         
         setTimeout(() => {
             resultDiv.style.display = 'none';
-        }, 3000);
+        }, 5000); // Show for 5 seconds (was 3)
     } catch (error) {
         alert('Scan failed: ' + error.message);
     }

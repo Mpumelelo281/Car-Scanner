@@ -381,6 +381,7 @@ def scan_car(current_user):
     
     conn.commit()
     
+    # Get updated car info
     cur.execute('''
         SELECT c.*, u.full_name as last_worker
         FROM cars c
@@ -389,9 +390,41 @@ def scan_car(current_user):
         WHERE c.car_id = %s
     ''', (car_id,))
     updated_car = cur.fetchone()
+    
+    # Get previous scans history (last 3 scans by other workers)
+    cur.execute('''
+        SELECT s.scan_time, u.full_name as worker_name, s.shift_number, s.worker_id
+        FROM scans s
+        JOIN users u ON s.worker_id = u.user_id
+        WHERE s.car_id = %s AND s.worker_id != %s
+        ORDER BY s.scan_time DESC
+        LIMIT 3
+    ''', (car_id, current_user['user_id']))
+    previous_scans = cur.fetchall()
+    
     conn.close()
     
-    return jsonify({'message': 'Scan recorded successfully', 'car': dict(updated_car)})
+    # Build scan history message
+    scan_history = []
+    if previous_scans:
+        for scan in previous_scans:
+            time_ago = (now - scan['scan_time']).total_seconds() / 3600
+            if time_ago < 1:
+                time_str = f"{int(time_ago * 60)} min ago"
+            else:
+                time_str = f"{int(time_ago)}h ago"
+            scan_history.append({
+                'worker': scan['worker_name'],
+                'shift': scan['shift_number'],
+                'time_ago': time_str
+            })
+    
+    return jsonify({
+        'message': 'Scan recorded successfully', 
+        'car': dict(updated_car),
+        'previous_scans': scan_history,
+        'is_new': len(previous_scans) == 0 and car is None
+    })
 
 # CAR DATA
 @app.route('/api/cars', methods=['GET'])
@@ -419,8 +452,9 @@ def get_cars(current_user):
     params = [date_filter]
     
     if current_user['role'] == 'worker':
-        base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.shift_number = %s)'
-        params.append(current_user['assigned_shift'])
+        # Workers only see cars THEY scanned (not entire shift)
+        base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.worker_id = %s)'
+        params.append(current_user['user_id'])
     elif shift:
         base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.shift_number = %s)'
         params.append(shift)
@@ -497,7 +531,7 @@ def export_excel(current_user):
     query = '''
         SELECT c.car_identifier, c.first_scan_time, c.last_scan_time, c.scan_count,
                c.status, c.date, u.full_name as worker_name, s.shift_number,
-               EXTRACT(EPOCH FROM (c.last_scan_time - c.first_scan_time))/3600 as hours_parked
+               EXTRACT(EPOCH FROM (NOW() - c.first_scan_time))/3600 as hours_parked
         FROM cars c
         JOIN scans s ON c.car_id = s.car_id
         JOIN users u ON s.worker_id = u.user_id
@@ -505,7 +539,11 @@ def export_excel(current_user):
     '''
     params = [date_filter]
     
-    if shift:
+    # Workers only export THEIR scans
+    if current_user['role'] == 'worker':
+        query += ' AND s.worker_id = %s'
+        params.append(current_user['user_id'])
+    elif shift:
         query += ' AND s.shift_number = %s'
         params.append(shift)
     
@@ -517,8 +555,7 @@ def export_excel(current_user):
     
     cur.execute(query, params)
     data = cur.fetchall()
-    conn.close()
-    
+    conn.close()    
     wb = Workbook()
     ws = wb.active
     ws.title = "Parking Report"
@@ -566,19 +603,16 @@ def export_excel(current_user):
             str(row['date'])
         ])
     
+    # Color only the "Overdue By" column text (not the whole row)
     for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
-        status = row[5].value  # Status column
-        overdue_col = row[6].value  # Overdue By column
+        overdue_col = row[6]  # "Overdue By" column (G)
         
-        if 'OVERDUE' in status or (overdue_col and '🚨' in str(overdue_col)):
-            # 12+ hours overdue - RED with flag
-            for cell in row:
-                cell.fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
-                cell.font = Font(color='FFFFFF', bold=True)
-        elif 'WARNING' in status or (overdue_col and '⚠️' in str(overdue_col)):
-            # 4-12 hours warning - ORANGE
-            for cell in row:
-                cell.fill = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
+        if overdue_col.value and '🚨' in str(overdue_col.value):
+            # 12+ hours - RED TEXT with bold
+            overdue_col.font = Font(color='FF0000', bold=True, size=12)
+        elif overdue_col.value and '⚠️' in str(overdue_col.value):
+            # 4-12 hours - ORANGE TEXT with bold
+            overdue_col.font = Font(color='FF8C00', bold=True, size=12)
     
     for col in ws.columns:
         max_length = 0

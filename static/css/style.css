@@ -400,17 +400,17 @@ body {
 
 .filter-bar {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-bottom: 20px;
+    margin-bottom: 16px;
 }
 
 .filter-select {
-    padding: 8px 12px;
+    padding: 6px 10px;
     border: 2px solid var(--border);
     border-radius: 6px;
-    font-size: 14px;
-    min-width: 150px;
+    font-size: 13px;
+    min-width: 130px;
     cursor: pointer;
     transition: all 0.2s;
 }
@@ -617,12 +617,282 @@ tr:last-child td {
     }
     
     table {
-        font-size: 12px;
+        font-size: 11px;
     }
     
     th, td {
-        padding: 8px;
+        padding: 6px;
     }
+    
+    .admin-filter-bar {
+        flex-direction: column !important;
+    }
+    
+    .role-filter-buttons {
+        flex-wrap: wrap;
+    }
+    
+    .role-btn {
+        font-size: 11px !important;
+        padding: 6px 10px !important;
+    }
+    
+    .user-search-input {
+        width: 100% !important;
+    }
+    
+    .unified-table-container {
+        overflow-x: auto;
+    }
+}
+
+/* Unified Admin Table Styles */
+.admin-filter-bar {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.role-filter-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.role-btn {
+    padding: 8px 16px;
+    border: 2px solid #e5e7eb;
+    background: white;
+    color: #64748b;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.role-btn:hover {
+    background: #f8fafc;
+    border-color: #6366f1;
+}
+
+.role-btn.active {
+    background: #6366f1;
+    color: white;
+    border-color: #6366f1;
+}
+
+.search-and-count {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex: 1;
+}
+
+.user-search-input {
+    flex: 1;
+    max-width: 400px;
+    padding: 8px 16px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.user-search-input:focus {
+    outline: none;
+    border-color: #6366f1;
+}
+
+.user-count {
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.unified-table-container {
+    max-height: 600px;
+    overflow-y: auto;
+    border-radius: 8px;
+}
+
+.unified-user-table {
+    width: 100%;
+    font-size: 13px;
+}
+
+.unified-user-table thead {
+    position: sticky;
+    top: 0;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    z-index: 10;
+}
+
+.unified-user-table th {
+    padding: 12px;
+    text-align: left;
+    color: white;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+}
+
+.unified-user-table tbody tr {
+    border-bottom: 1px solid #f1f5f9;
+    transition: background 0.2s;
+}
+
+.unified-user-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.unified-user-table td {
+    padding: 12px;
+}
+
+.user-name-link {
+    color: #6366f1;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.user-name-link:hover {
+    text-decoration: underline;
+}
+
+.text-secondary {
+    color: #64748b;
+}
+
+.role-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.role-badge.role-admin {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.role-badge.role-supervisor {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.role-badge.role-worker {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.status-badge.status-active {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-badge.status-inactive {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+
+.btn-action {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.btn-action:hover {
+    transform: translateY(-2px);
+}
+
+.btn-excel {
+    background: #10b981;
+    color: white;
+}
+
+.btn-excel:hover {
+    background: #059669;
+}
+
+.btn-activate {
+    background: #10b981;
+    color: white;
+}
+
+.btn-activate:hover {
+    background: #059669;
+}
+
+.btn-deactivate {
+    background: #64748b;
+    color: white;
+}
+
+.btn-deactivate:hover {
+    background: #475569;
+}
+
+.btn-add-user {
+    background: white;
+    color: #ef4444;
+    border: none;
+    padding: 12px 24px;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(255, 255, 255, 0.3);
+    transition: all 0.3s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-add-user:hover {
+    transform: translateY(-2px);
+}
+
+.btn-download-excel {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    border: none;
+    padding: 14px 28px;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 12px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    transition: all 0.3s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-download-excel:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
 }
 
 .loading {

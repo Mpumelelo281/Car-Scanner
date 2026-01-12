@@ -132,8 +132,21 @@ if (document.getElementById('dashboardContent')) {
 }
 
 function initDashboard() {
+    // Set user info
     document.getElementById('userName').textContent = currentUser.full_name;
     document.getElementById('userRole').textContent = currentUser.role;
+    
+    // Update navbar title based on role
+    const navbarBrand = document.querySelector('.navbar-brand span:last-child');
+    if (navbarBrand) {
+        if (currentUser.role === 'admin') {
+            navbarBrand.textContent = 'Admin Dashboard';
+        } else if (currentUser.role === 'supervisor') {
+            navbarBrand.textContent = 'Supervisor Dashboard';
+        } else {
+            navbarBrand.textContent = 'Worker Dashboard';
+        }
+    }
     
     document.getElementById('logoutBtn').addEventListener('click', () => {
         clearToken();
@@ -141,22 +154,457 @@ function initDashboard() {
         window.location.href = '/';
     });
     
-    loadDashboardData();
-    loadCars();
-    
+    // Load role-specific dashboard
     if (currentUser.role === 'worker') {
-        showScannerSection();
-        document.getElementById('userManagementSection')?.remove();
-    }
-    
-    if (currentUser.role === 'admin') {
-        showUserManagement();
+        loadWorkerDashboard();
+    } else if (currentUser.role === 'supervisor') {
+        loadSupervisorDashboard();
+    } else if (currentUser.role === 'admin') {
+        loadAdminDashboard();
     }
     
     document.getElementById('shiftFilter')?.addEventListener('change', loadCars);
     document.getElementById('statusFilter')?.addEventListener('change', loadCars);
     document.getElementById('dateFilter')?.addEventListener('change', loadCars);
 }
+
+function loadWorkerDashboard() {
+    showScannerSection();
+    loadDashboardData();
+    loadCars();
+    document.getElementById('userManagementSection')?.remove();
+    // Workers don't see search
+    document.getElementById('navbarSearch').style.display = 'none';
+}
+
+function loadSupervisorDashboard() {
+    // Show search for supervisors
+    document.getElementById('navbarSearch').style.display = 'flex';
+    document.getElementById('globalSearch').placeholder = '🔍 Search your team workers...';
+    
+    loadDashboardData();
+    loadCars();
+    showSupervisorDashboard();
+    document.getElementById('userManagementSection')?.remove();
+}
+
+function loadAdminDashboard() {
+    // Hide navbar search (we'll use integrated search in the table)
+    document.getElementById('navbarSearch').style.display = 'none';
+    
+    // Create the new unified admin dashboard
+    createUnifiedAdminDashboard();
+}
+
+function createUnifiedAdminDashboard() {
+    const mainContent = document.querySelector('.main-content');
+    
+    if (!mainContent) return;
+    
+    // Build complete admin dashboard HTML
+    mainContent.innerHTML = `
+        <!-- Stats Cards -->
+        <div class="stats-grid" style="margin-bottom: 24px;">
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon primary">📊</div>
+                </div>
+                <div class="stat-value" id="totalCars">0</div>
+                <div class="stat-label">Total Cars Today</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon success">✅</div>
+                </div>
+                <div class="stat-value" id="activeCars">0</div>
+                <div class="stat-label">Active (< 4 hours)</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon warning">⚠️</div>
+                </div>
+                <div class="stat-value" id="warningCars">0</div>
+                <div class="stat-label">Warning (4-12 hours)</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-header">
+                    <div class="stat-icon danger">🚨</div>
+                </div>
+                <div class="stat-value" id="overdueCars">0</div>
+                <div class="stat-label">Overdue (12+ hours)</div>
+            </div>
+        </div>
+        
+        <!-- Unified User Management -->
+        <div class="card" style="margin-bottom: 24px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+                <h2 class="card-title" style="color: white;">👥 User Management</h2>
+                <div class="card-actions">
+                    <button onclick="showAddUserModal()" class="btn-add-user">
+                        <span style="font-size: 18px;">➕</span>
+                        <span>Add User</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- Filter Bar -->
+                <div class="admin-filter-bar">
+                    <div class="role-filter-buttons">
+                        <button onclick="filterUsersByRole('')" id="filterAll" class="role-btn active">
+                            👥 All
+                        </button>
+                        <button onclick="filterUsersByRole('worker')" id="filterWorker" class="role-btn">
+                            👷 Workers
+                        </button>
+                        <button onclick="filterUsersByRole('supervisor')" id="filterSupervisor" class="role-btn">
+                            👨‍💼 Supervisors
+                        </button>
+                        <button onclick="filterUsersByRole('admin')" id="filterAdmin" class="role-btn">
+                            👑 Admins
+                        </button>
+                    </div>
+                    
+                    <div class="search-and-count">
+                        <input type="text" id="userSearchInput" placeholder="🔍 Search by name or username..." 
+                               onkeyup="searchUsersInTable()" class="user-search-input">
+                        <div class="user-count" id="userCount">Loading...</div>
+                    </div>
+                </div>
+                
+                <!-- Unified Table -->
+                <div class="unified-table-container">
+                    <table class="unified-user-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Username</th>
+                                <th>Role</th>
+                                <th>Shift</th>
+                                <th>Supervisor</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="unifiedUserTable">
+                            <tr>
+                                <td colspan="7" style="text-align: center; padding: 40px; color: #94a3b8;">
+                                    Loading users...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Vehicles Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">🚗 Parked Vehicles</h2>
+                <div class="card-actions">
+                    <button onclick="exportExcel()" class="btn-download-excel">
+                        <span style="font-size: 20px;">📥</span>
+                        <span>Download Excel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="filter-bar">
+                    <input type="date" id="dateFilter" class="filter-select">
+                    <select id="shiftFilter" class="filter-select">
+                        <option value="">All Shifts</option>
+                        <option value="1">Shift 1 (6AM-10AM)</option>
+                        <option value="2">Shift 2 (10AM-2PM)</option>
+                        <option value="3">Shift 3 (2PM-6PM)</option>
+                        <option value="4">Shift 4 (6PM-10PM)</option>
+                        <option value="5">Shift 5 (10PM-2AM)</option>
+                    </select>
+                    <select id="statusFilter" class="filter-select">
+                        <option value="">All Status</option>
+                        <option value="active">Active</option>
+                        <option value="warning">Warning</option>
+                        <option value="overdue">Overdue</option>
+                    </select>
+                </div>
+                
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CAR ID</th>
+                                <th>FIRST SCAN</th>
+                                <th>LAST SCAN</th>
+                                <th>SCANS</th>
+                                <th>HOURS</th>
+                                <th>STATUS</th>
+                                <th>OVERDUE BY</th>
+                                <th>WORKER</th>
+                            </tr>
+                        </thead>
+                        <tbody id="carsTableBody">
+                            <tr>
+                                <td colspan="8" style="text-align: center; padding: 40px;">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- User Modal Container -->
+        <div id="userManagementSection"></div>
+    `;
+    
+    // Set today's date
+    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+    
+    // Add event listeners
+    document.getElementById('shiftFilter').addEventListener('change', loadCars);
+    document.getElementById('statusFilter').addEventListener('change', loadCars);
+    document.getElementById('dateFilter').addEventListener('change', loadCars);
+    
+    // Load all data
+    loadDashboardData();
+    loadCars();
+    loadAllUsersUnified();
+    showUserManagement(); // This adds the modal
+}
+
+// Store users globally for filtering
+let allUnifiedUsers = [];
+let currentRoleFilter = '';
+
+async function loadAllUsersUnified() {
+    try {
+        const users = await apiCall('/users');
+        allUnifiedUsers = users;
+        displayUnifiedUserTable(users);
+    } catch (error) {
+        console.error('Failed to load users:', error);
+        document.getElementById('unifiedUserTable').innerHTML = 
+            '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #ef4444;">Failed to load users</td></tr>';
+    }
+}
+
+function displayUnifiedUserTable(users) {
+    const tbody = document.getElementById('unifiedUserTable');
+    const userCount = document.getElementById('userCount');
+    
+    if (!tbody) return;
+    
+    // Update count
+    if (userCount) {
+        userCount.textContent = `${users.length} user${users.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #94a3b8;">No users found</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = users.map(user => `
+        <tr>
+            <td>
+                <a href="#" onclick="showUserProfile(${user.user_id}, '${user.role}'); return false;" 
+                   class="user-name-link">
+                    ${user.full_name}
+                </a>
+            </td>
+            <td class="text-secondary">${user.username}</td>
+            <td>
+                <span class="role-badge role-${user.role}">
+                    ${user.role === 'admin' ? '👑' : user.role === 'supervisor' ? '👨‍💼' : '👷'} 
+                    ${user.role}
+                </span>
+            </td>
+            <td class="text-secondary">${user.assigned_shift ? `Shift ${user.assigned_shift}` : '-'}</td>
+            <td class="text-secondary">${user.supervisor_name || '-'}</td>
+            <td>
+                <span class="status-badge status-${user.is_active ? 'active' : 'inactive'}">
+                    ${user.is_active ? '✅ Active' : '❌ Inactive'}
+                </span>
+            </td>
+            <td>
+                <div class="action-buttons">
+                    ${user.role === 'worker' ? `
+                        <button onclick="downloadWorkerExcel(${user.user_id}, '${user.full_name}')" 
+                                class="btn-action btn-excel" title="Download Excel">
+                            📥
+                        </button>
+                    ` : ''}
+                    <button onclick="toggleUserStatus(${user.user_id}, ${user.is_active})" 
+                            class="btn-action ${user.is_active ? 'btn-deactivate' : 'btn-activate'}" 
+                            title="${user.is_active ? 'Deactivate' : 'Activate'}">
+                        ${user.is_active ? '🚫' : '✅'}
+                    </button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function filterUsersByRole(role) {
+    currentRoleFilter = role;
+    
+    // Update button styles
+    document.querySelectorAll('.role-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    const activeBtn = role === '' ? document.getElementById('filterAll') :
+                      role === 'worker' ? document.getElementById('filterWorker') :
+                      role === 'supervisor' ? document.getElementById('filterSupervisor') :
+                      document.getElementById('filterAdmin');
+    
+    if (activeBtn) {
+        activeBtn.classList.add('active');
+    }
+    
+    // Apply filters
+    applyUserFilters();
+}
+
+function searchUsersInTable() {
+    applyUserFilters();
+}
+
+function applyUserFilters() {
+    const searchTerm = document.getElementById('userSearchInput')?.value.toLowerCase().trim() || '';
+    
+    let filtered = allUnifiedUsers;
+    
+    // Filter by role
+    if (currentRoleFilter) {
+        filtered = filtered.filter(u => u.role === currentRoleFilter);
+    }
+    
+    // Filter by search term
+    if (searchTerm) {
+        filtered = filtered.filter(u => 
+            u.full_name.toLowerCase().includes(searchTerm) || 
+            u.username.toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    displayUnifiedUserTable(filtered);
+}
+
+async function toggleUserStatus(userId, currentStatus) {
+    const action = currentStatus ? 'deactivate' : 'activate';
+    
+    if (!confirm(`Are you sure you want to ${action} this user?`)) {
+        return;
+    }
+    
+    try {
+        await apiCall(`/users/${userId}/status`, {
+            method: 'PUT',
+            body: JSON.stringify({ is_active: !currentStatus })
+        });
+        
+        // Reload users
+        await loadAllUsersUnified();
+        alert(`User ${action}d successfully!`);
+    } catch (error) {
+        alert(`Failed to ${action} user: ` + error.message);
+    }
+}
+
+function showSupervisorDashboard() {
+    const dashboardHTML = `
+        <div class="card" style="margin-bottom: 24px;">
+            <div class="card-header">
+                <h2 class="card-title">👥 My Team Workers</h2>
+            </div>
+            <div class="card-body">
+                <div id="supervisorWorkersList"></div>
+            </div>
+        </div>
+    `;
+    
+    const mainContent = document.querySelector('.main-content');
+    const statsGrid = document.querySelector('.stats-grid');
+    if (statsGrid && mainContent) {
+        statsGrid.insertAdjacentHTML('afterend', dashboardHTML);
+    }
+    loadSupervisorWorkers();
+}
+
+// Global Search Handler (for Supervisor navbar search)
+async function handleGlobalSearch(event) {
+    const searchTerm = event.target.value.toLowerCase().trim();
+    const dropdown = document.getElementById('searchDropdown');
+    
+    if (!dropdown) return;
+    
+    if (searchTerm.length < 2) {
+        dropdown.style.display = 'none';
+        return;
+    }
+    
+    try {
+        const users = await apiCall('/users');
+        let filtered;
+        
+        if (currentUser.role === 'supervisor') {
+            // Supervisors see only their team
+            filtered = users.filter(u => 
+                u.role === 'worker' && 
+                u.supervisor_id === currentUser.user_id &&
+                (u.full_name.toLowerCase().includes(searchTerm) || 
+                 u.username.toLowerCase().includes(searchTerm))
+            );
+        }
+        
+        displaySearchDropdown(filtered);
+    } catch (error) {
+        console.error('Search failed:', error);
+    }
+}
+
+function displaySearchDropdown(users) {
+    const dropdown = document.getElementById('searchDropdown');
+    
+    if (!dropdown) return;
+    
+    if (users.length === 0) {
+        dropdown.innerHTML = '<div style="padding: 16px; text-align: center; color: #94a3b8;">No users found</div>';
+        dropdown.style.display = 'block';
+        return;
+    }
+    
+    dropdown.innerHTML = users.map(user => `
+        <div onclick="showUserProfile(${user.user_id}, '${user.role}')" 
+             style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center;"
+             onmouseover="this.style.background='#f8fafc'" 
+             onmouseout="this.style.background='white'">
+            <div>
+                <div style="font-weight: 600; color: #0f172a;">${user.full_name}</div>
+                <div style="font-size: 12px; color: #64748b;">${user.username} • ${user.role}</div>
+            </div>
+            ${user.role === 'worker' ? `
+                <button onclick="event.stopPropagation(); downloadWorkerExcel(${user.user_id}, '${user.full_name}')" 
+                        style="padding: 6px 12px; background: #10b981; color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;">
+                    📥 Download
+                </button>
+            ` : ''}
+        </div>
+    `).join('');
+    
+    dropdown.style.display = 'block';
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+    const searchInput = document.getElementById('globalSearch');
+    const dropdown = document.getElementById('searchDropdown');
+    if (searchInput && dropdown && !searchInput.contains(e.target) && !dropdown.contains(e.target)) {
+        dropdown.style.display = 'none';
+    }
+});
 
 async function loadDashboardData() {
     try {
@@ -380,8 +828,7 @@ async function scanManually() {
                     Car: <strong>${data.car.car_identifier}</strong> | 
                     Scans: <strong>${data.car.scan_count}x</strong> | 
                     Status: <strong>${data.car.status.toUpperCase()}</strong>
-                </div>
-        `;
+                </div>`;
         
         // Show previous scans by other workers
         if (data.previous_scans && data.previous_scans.length > 0) {
@@ -389,15 +836,13 @@ async function scanManually() {
                 <div style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.2); border-radius: 8px; border-left: 4px solid #fbbf24;">
                     <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #92400e;">
                         ℹ️ Previously scanned by:
-                    </div>
-            `;
+                    </div>`;
             
             data.previous_scans.forEach(scan => {
                 resultHTML += `
                     <div style="font-size: 12px; margin-bottom: 4px; color: #78350f;">
                         • <strong>${scan.worker}</strong> (Shift ${scan.shift}) - ${scan.time_ago}
-                    </div>
-                `;
+                    </div>`;
             });
             
             resultHTML += `</div>`;
@@ -405,8 +850,7 @@ async function scanManually() {
             resultHTML += `
                 <div style="margin-top: 8px; font-size: 13px; color: #065f46; font-weight: 600;">
                     🆕 First time scanning this car today!
-                </div>
-            `;
+                </div>`;
         }
         
         resultHTML += `</div>`;
@@ -533,23 +977,30 @@ async function showUserManagement() {
                         <input type="text" id="userFullName" class="form-input" required>
                     </div>
                     <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="userPassword" class="form-input" required placeholder="Enter password">
+                    </div>
+                    <div class="form-group">
                         <label>Role</label>
                         <select id="userRole" class="form-input" required>
+                            <option value="">Select Role</option>
                             <option value="worker">Worker</option>
                             <option value="supervisor">Supervisor</option>
+                            <option value="admin">Admin</option>
                         </select>
                     </div>
-                    <div class="form-group" id="shiftGroup">
+                    <div class="form-group" id="shiftGroup" style="display: none;">
                         <label>Assigned Shift</label>
                         <select id="userShift" class="form-input">
-                            <option value="">No Shift</option>
+                            <option value="">Select Shift</option>
                             <option value="1">Shift 1 (6AM-10AM)</option>
                             <option value="2">Shift 2 (10AM-2PM)</option>
                             <option value="3">Shift 3 (2PM-6PM)</option>
                             <option value="4">Shift 4 (6PM-10PM)</option>
+                            <option value="5">Shift 5 (10PM-2AM)</option>
                         </select>
                     </div>
-                    <div class="form-group" id="supervisorGroup">
+                    <div class="form-group" id="supervisorGroup" style="display: none;">
                         <label>Supervisor</label>
                         <select id="userSupervisor" class="form-input">
                             <option value="">No Supervisor</option>
@@ -575,9 +1026,20 @@ async function showUserManagement() {
     });
     
     document.getElementById('userRole').addEventListener('change', (e) => {
-        const isWorker = e.target.value === 'worker';
+        const role = e.target.value;
+        const isWorker = role === 'worker';
+        const isSupervisor = role === 'supervisor';
+        
+        // Show/hide shift selection for workers
         document.getElementById('shiftGroup').style.display = isWorker ? 'block' : 'none';
+        
+        // Show/hide supervisor selection
         document.getElementById('supervisorGroup').style.display = isWorker ? 'block' : 'none';
+        
+        // Load appropriate supervisors
+        if (isWorker) {
+            loadSupervisors();
+        }
     });
 }
 
@@ -638,6 +1100,11 @@ async function loadSupervisors() {
 function showAddUserModal() {
     document.getElementById('modalTitle').textContent = 'Add User';
     document.getElementById('userForm').reset();
+    
+    // Hide shift and supervisor fields initially (until worker is selected)
+    document.getElementById('shiftGroup').style.display = 'none';
+    document.getElementById('supervisorGroup').style.display = 'none';
+    
     document.getElementById('userModal').classList.add('active');
 }
 
@@ -652,6 +1119,7 @@ async function saveUser() {
     // Get values directly from form
     const username = form.querySelector('#userUsername').value.trim();
     const fullName = form.querySelector('#userFullName').value.trim();
+    const password = form.querySelector('#userPassword').value;
     const role = form.querySelector('#userRole').value;
     const shift = form.querySelector('#userShift').value;
     const supervisor = form.querySelector('#userSupervisor').value;
@@ -659,6 +1127,7 @@ async function saveUser() {
     console.log('Raw form values:', {
         username: username,
         fullName: fullName,
+        password: password ? '***' : 'empty',
         role: role,
         shift: shift,
         supervisor: supervisor
@@ -668,12 +1137,13 @@ async function saveUser() {
     const userData = {
         username: username,
         full_name: fullName,
+        password: password,
         role: role,
         assigned_shift: shift || null,
         supervisor_id: supervisor || null
     };
     
-    console.log('Prepared user data:', JSON.stringify(userData, null, 2));
+    console.log('Prepared user data:', JSON.stringify({...userData, password: '***'}, null, 2));
     
     // Simple validation
     if (!username) {
@@ -683,6 +1153,16 @@ async function saveUser() {
     
     if (!fullName) {
         alert('Full Name is required');
+        return;
+    }
+    
+    if (!password) {
+        alert('Password is required');
+        return;
+    }
+    
+    if (!role) {
+        alert('Role is required');
         return;
     }
     
@@ -975,5 +1455,105 @@ async function showUserProfile(userId, userRole) {
     } catch (error) {
         console.error('Error loading user profile:', error);
         alert('Failed to load profile: ' + error.message);
+    }
+}
+
+// Supervisor Worker Management
+async function loadSupervisorWorkers() {
+    try {
+        const users = await apiCall('/users');
+        const workers = users.filter(u => u.role === 'worker' && u.supervisor_id === currentUser.user_id);
+        displaySupervisorWorkers(workers);
+    } catch (error) {
+        console.error('Failed to load workers:', error);
+    }
+}
+
+function displaySupervisorWorkers(workers) {
+    const container = document.getElementById('supervisorWorkersList');
+    
+    if (!container) return;
+    
+    if (workers.length === 0) {
+        container.innerHTML = '<p style="text-align: center; color: #94a3b8; padding: 20px;">No workers assigned to you yet.</p>';
+        return;
+    }
+    
+    container.innerHTML = `
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; font-size: 13px;">
+                <thead>
+                    <tr style="background: #f8fafc;">
+                        <th style="padding: 10px; text-align: left;">Worker Name</th>
+                        <th style="padding: 10px; text-align: left;">Shift</th>
+                        <th style="padding: 10px; text-align: left;">Status</th>
+                        <th style="padding: 10px; text-align: left;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${workers.map(worker => `
+                        <tr style="border-bottom: 1px solid #f1f5f9;">
+                            <td style="padding: 12px;">
+                                <a href="#" onclick="showUserProfile(${worker.user_id}, 'worker'); return false;" 
+                                   style="color: #6366f1; text-decoration: none; font-weight: 600;">
+                                    ${worker.full_name}
+                                </a>
+                            </td>
+                            <td style="padding: 12px;">Shift ${worker.assigned_shift}</td>
+                            <td style="padding: 12px;">
+                                <span class="badge ${worker.is_active ? 'badge-success' : 'badge-danger'}" style="font-size: 11px; padding: 4px 8px;">
+                                    ${worker.is_active ? 'Active' : 'Inactive'}
+                                </span>
+                            </td>
+                            <td style="padding: 12px;">
+                                <button onclick="downloadWorkerExcel(${worker.user_id}, '${worker.full_name}')" 
+                                        class="btn btn-success btn-sm" style="padding: 5px 10px; font-size: 12px;">
+                                    📥 Download
+                                </button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+// Download Excel for Specific Worker
+async function downloadWorkerExcel(workerId, workerName) {
+    const dateInput = document.getElementById('dateFilter');
+    const date = dateInput ? dateInput.value : new Date().toISOString().split('T')[0];
+    
+    const params = new URLSearchParams();
+    params.append('worker_id', workerId);
+    params.append('date', date);
+    
+    try {
+        const token = getToken();
+        const response = await fetch(`${API_URL}/export?${params}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error('Export failed');
+        }
+        
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${workerName.replace(/\s+/g, '_')}_report_${date}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        console.log('Excel downloaded for:', workerName);
+    } catch (error) {
+        console.error('Download failed:', error);
+        alert('Failed to download Excel: ' + error.message);
     }
 }

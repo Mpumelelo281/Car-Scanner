@@ -86,38 +86,89 @@ def dashboard():
 # AUTH
 @app.route('/api/login', methods=['POST'])
 def login():
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT * FROM users WHERE username = %s AND is_active = TRUE', (username,))
-    user = cur.fetchone()
-    conn.close()
-    
-    if user and bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
-        token = jwt.encode({
-            'user_id': user['user_id'],
-            'username': user['username'],
-            'role': user['role'],
-            'full_name': user['full_name'],
-            'assigned_shift': user['assigned_shift'],
-            'supervisor_id': user['supervisor_id']
-        }, app.config['SECRET_KEY'], algorithm='HS256')
+    try:
+        data = request.get_json()
+        print(f"[LOGIN] Received request: {data}")
         
-        return jsonify({
-            'token': token,
-            'user': {
-                'user_id': user['user_id'],
-                'username': user['username'],
-                'role': user['role'],
-                'full_name': user['full_name'],
-                'assigned_shift': user['assigned_shift']
-            }
-        })
-    
-    return jsonify({'error': 'Invalid credentials'}), 401
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        username = data.get('username')
+        password = data.get('password')
+        print(f"[LOGIN] Attempting login for user: {username}")
+        
+        if not username or not password:
+            return jsonify({'error': 'Username and password required'}), 400
+        
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM users WHERE username = %s AND is_active = TRUE', (username,))
+        user = cur.fetchone()
+        print(f"[LOGIN] User found: {user is not None}")
+        conn.close()
+        
+        if not user:
+            print(f"[LOGIN] User not found or inactive")
+            return jsonify({'error': 'Invalid credentials'}), 401
+        
+        # Check if user has a password set
+        if not user['password_hash']:
+            print(f"[LOGIN] User has no password hash")
+            return jsonify({'error': 'User account needs password setup. Please contact admin.'}), 401
+        
+        # Verify password
+        try:
+            print(f"[LOGIN] Verifying password for user {username}")
+            # Convert password_hash to bytes if it's a string
+            password_hash_bytes = user['password_hash']
+            if isinstance(password_hash_bytes, str):
+                password_hash_bytes = password_hash_bytes.encode('utf-8')
+            
+            print(f"[LOGIN] Hash type: {type(password_hash_bytes)}, Length: {len(password_hash_bytes) if isinstance(password_hash_bytes, (str, bytes)) else 'N/A'}")
+            
+            password_match = bcrypt.checkpw(password.encode(), password_hash_bytes)
+            print(f"[LOGIN] Password match result: {password_match}")
+            
+            if password_match:
+                # Use username as full_name if full_name is NULL
+                display_name = user['full_name'] if user['full_name'] else user['username']
+                
+                token = jwt.encode({
+                    'user_id': user['user_id'],
+                    'username': user['username'],
+                    'role': user['role'],
+                    'full_name': display_name,
+                    'assigned_shift': user['assigned_shift'],
+                    'supervisor_id': user['supervisor_id']
+                }, app.config['SECRET_KEY'], algorithm='HS256')
+                
+                print(f"[LOGIN] Login successful for user {username}")
+                return jsonify({
+                    'token': token,
+                    'user': {
+                        'user_id': user['user_id'],
+                        'username': user['username'],
+                        'role': user['role'],
+                        'full_name': display_name,
+                        'assigned_shift': user['assigned_shift']
+                    }
+                }), 200
+            else:
+                print(f"[LOGIN] Password verification failed")
+        except Exception as e:
+            print(f"[LOGIN] Password check error: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': 'Password verification failed'}), 500
+        
+        print(f"[LOGIN] Invalid credentials for user {username}")
+        return jsonify({'error': 'Invalid credentials'}), 401
+        
+    except Exception as e:
+        print(f"[LOGIN] Login error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Server error during login'}), 500
 
 # USER MANAGEMENT
 @app.route('/api/users', methods=['GET'])
@@ -157,15 +208,23 @@ def create_user(current_user):
         username = data.get('username', '').strip()
         full_name = data.get('full_name', '').strip()
         role = data.get('role', '').strip()
+        password = data.get('password', '').strip()
         
         if not username or not full_name or not role:
             return jsonify({'error': 'Username, full name, and role are required'}), 400
+        
+        # Use provided password or default to temp123
+        if not password:
+            password = 'temp123'
+            print(f"DEBUG: No password provided, using default: {password}")
         
         # Validate role
         if role not in ['worker', 'supervisor', 'admin']:
             return jsonify({'error': f'Invalid role: {role}'}), 400
         
-        password_hash = bcrypt.hashpw('temp123'.encode(), bcrypt.gensalt()).decode()
+        # Hash the password with bcrypt
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        print(f"DEBUG: Password hashed for user {username}")
         
         conn = get_db()
         cur = conn.cursor()
@@ -194,8 +253,8 @@ def create_user(current_user):
             print(f"DEBUG: Inserting user - username={username}, role={role}, shift={assigned_shift}, supervisor={supervisor_id}")
             
             cur.execute('''
-                INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id
+                INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE) RETURNING user_id
             ''', (username, password_hash, role, full_name, assigned_shift, supervisor_id))
             
             user_id = cur.fetchone()['user_id']

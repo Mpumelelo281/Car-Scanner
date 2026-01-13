@@ -1,4 +1,8 @@
 // API Configuration
+// VERSION: v3.0-DEBUG-WITH-DOWNLOAD-ICON
+// Last Updated: 2026-01-13 15:45
+// Features: Excel download per worker + Shift/Supervisor fields + Debug logging
+// Excel Icon: 📥 (download arrow)
 const API_URL = window.location.origin + '/api';
 let currentUser = null;
 let authToken = null;
@@ -47,10 +51,15 @@ async function apiCall(endpoint, options = {}) {
             return null;
         }
         
-        const data = await response.json();
+        let data;
+        try {
+            data = await response.json();
+        } catch (jsonError) {
+            throw new Error('Invalid response from server');
+        }
         
         if (!response.ok) {
-            throw new Error(data.error || 'Request failed');
+            throw new Error(data.error || data.message || 'Request failed');
         }
         
         return data;
@@ -99,9 +108,28 @@ if (document.getElementById('loginForm')) {
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
+        const usernameInput = document.getElementById('username');
+        const passwordInput = document.getElementById('password');
         const errorDiv = document.getElementById('loginError');
+        
+        if (!usernameInput || !passwordInput) {
+            console.error('Login form elements not found');
+            alert('Login form error - please refresh the page');
+            return;
+        }
+        
+        const username = usernameInput.value;
+        const password = passwordInput.value;
+        
+        if (!username || !password) {
+            if (errorDiv) {
+                errorDiv.textContent = 'Please enter username and password';
+                errorDiv.style.display = 'block';
+            } else {
+                alert('Please enter username and password');
+            }
+            return;
+        }
         
         try {
             const data = await apiCall('/login', {
@@ -109,12 +137,28 @@ if (document.getElementById('loginForm')) {
                 body: JSON.stringify({ username, password })
             });
             
-            setToken(data.token);
-            setUser(data.user);
-            window.location.href = '/dashboard';
+            console.log('Login response:', data);
+            
+            if (!data) {
+                throw new Error('No response from server');
+            }
+            
+            if (data.token && data.user) {
+                setToken(data.token);
+                setUser(data.user);
+                window.location.href = '/dashboard';
+            } else {
+                console.error('Missing token or user in response:', data);
+                throw new Error(data.error || 'Login failed - please try again');
+            }
         } catch (error) {
-            errorDiv.textContent = error.message;
-            errorDiv.style.display = 'block';
+            console.error('Login error:', error);
+            if (errorDiv) {
+                errorDiv.textContent = error.message || 'Login failed';
+                errorDiv.style.display = 'block';
+            } else {
+                alert('Login failed: ' + (error.message || 'Unknown error'));
+            }
         }
     });
 }
@@ -240,7 +284,7 @@ function createUnifiedAdminDashboard() {
         
         <!-- Unified User Management -->
         <div class="card" style="margin-bottom: 24px;">
-            <div class="card-header" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+            <div class="card-header" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
                 <h2 class="card-title" style="color: white;">👥 User Management</h2>
                 <div class="card-actions">
                     <button onclick="showAddUserModal()" class="btn-add-user">
@@ -279,13 +323,13 @@ function createUnifiedAdminDashboard() {
                     <table class="unified-user-table">
                         <thead>
                             <tr>
-                                <th>Name</th>
                                 <th>Username</th>
                                 <th>Role</th>
                                 <th>Shift</th>
                                 <th>Supervisor</th>
                                 <th>Status</th>
-                                <th>Actions</th>
+                                <th>Excel</th>
+                                <th>Delete</th>
                             </tr>
                         </thead>
                         <tbody id="unifiedUserTable">
@@ -410,10 +454,9 @@ function displayUnifiedUserTable(users) {
             <td>
                 <a href="#" onclick="showUserProfile(${user.user_id}, '${user.role}'); return false;" 
                    class="user-name-link">
-                    ${user.full_name}
+                    ${user.username}
                 </a>
             </td>
-            <td class="text-secondary">${user.username}</td>
             <td>
                 <span class="role-badge role-${user.role}">
                     ${user.role === 'admin' ? '👑' : user.role === 'supervisor' ? '👨‍💼' : '👷'} 
@@ -427,20 +470,20 @@ function displayUnifiedUserTable(users) {
                     ${user.is_active ? '✅ Active' : '❌ Inactive'}
                 </span>
             </td>
-            <td>
-                <div class="action-buttons">
-                    ${user.role === 'worker' ? `
-                        <button onclick="downloadWorkerExcel(${user.user_id}, '${user.full_name}')" 
-                                class="btn-action btn-excel" title="Download Excel">
-                            📥
-                        </button>
-                    ` : ''}
-                    <button onclick="toggleUserStatus(${user.user_id}, ${user.is_active})" 
-                            class="btn-action ${user.is_active ? 'btn-deactivate' : 'btn-activate'}" 
-                            title="${user.is_active ? 'Deactivate' : 'Activate'}">
-                        ${user.is_active ? '🚫' : '✅'}
+            <td style="text-align: center;">
+                ${user.role === 'worker' ? `
+                    <button onclick="downloadWorkerExcel(${user.user_id}, '${user.username}')" 
+                            class="btn-excel-table" title="Download Excel Report">
+                        <span style="font-size: 16px;">📥</span>
+                        <span>Excel</span>
                     </button>
-                </div>
+                ` : '<span style="color: #cbd5e1; font-size: 12px;">-</span>'}
+            </td>
+            <td style="text-align: center;">
+                <button onclick="deleteUser(${user.user_id}, '${user.username}')" 
+                        class="btn-delete" title="Delete User">
+                    🗑️
+                </button>
             </td>
         </tr>
     `).join('');
@@ -481,10 +524,9 @@ function applyUserFilters() {
         filtered = filtered.filter(u => u.role === currentRoleFilter);
     }
     
-    // Filter by search term
+    // Filter by search term - search username only
     if (searchTerm) {
         filtered = filtered.filter(u => 
-            u.full_name.toLowerCase().includes(searchTerm) || 
             u.username.toLowerCase().includes(searchTerm)
         );
     }
@@ -492,24 +534,23 @@ function applyUserFilters() {
     displayUnifiedUserTable(filtered);
 }
 
-async function toggleUserStatus(userId, currentStatus) {
-    const action = currentStatus ? 'deactivate' : 'activate';
-    
-    if (!confirm(`Are you sure you want to ${action} this user?`)) {
+async function deleteUser(userId, userName) {
+    if (!confirm(`Are you sure you want to DELETE ${userName}?\n\nThis will deactivate their account.`)) {
         return;
     }
     
     try {
-        await apiCall(`/users/${userId}/status`, {
-            method: 'PUT',
-            body: JSON.stringify({ is_active: !currentStatus })
+        await apiCall(`/users/${userId}`, {
+            method: 'DELETE'
         });
+        
+        alert(`${userName} has been deleted successfully!`);
         
         // Reload users
         await loadAllUsersUnified();
-        alert(`User ${action}d successfully!`);
     } catch (error) {
-        alert(`Failed to ${action} user: ` + error.message);
+        console.error('Delete failed:', error);
+        alert('Failed to delete user: ' + error.message);
     }
 }
 
@@ -914,54 +955,8 @@ async function exportExcel() {
 
 // User Management
 async function showUserManagement() {
+    // Only create the modal HTML, not another user table
     const userMgmtHTML = `
-        <div class="card" style="margin-top: 24px;">
-            <div class="card-header">
-                <h2 class="card-title">👥 User Management</h2>
-                <div class="card-actions">
-                    <button onclick="showAddUserModal()" style="
-                        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-                        color: white;
-                        border: none;
-                        padding: 14px 28px;
-                        font-size: 16px;
-                        font-weight: 600;
-                        border-radius: 12px;
-                        cursor: pointer;
-                        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-                        transition: all 0.3s;
-                        display: flex;
-                        align-items: center;
-                        gap: 8px;
-                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(99, 102, 241, 0.4)'"
-                       onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(99, 102, 241, 0.3)'">
-                        <span style="font-size: 20px;">➕</span>
-                        <span>Add User</span>
-                    </button>
-                </div>
-            </div>
-            <div class="card-body">
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Username</th>
-                                <th>Full Name</th>
-                                <th>Role</th>
-                                <th>Shift</th>
-                                <th>Supervisor</th>
-                                <th>Status</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="usersTableBody">
-                            <tr><td colspan="7" class="loading">Loading...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        
         <div id="userModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -969,19 +964,15 @@ async function showUserManagement() {
                 </div>
                 <form id="userForm">
                     <div class="form-group">
-                        <label>Username</label>
+                        <label>Username <span style="color: #ef4444;">*</span></label>
                         <input type="text" id="userUsername" class="form-input" required>
                     </div>
                     <div class="form-group">
-                        <label>Full Name</label>
-                        <input type="text" id="userFullName" class="form-input" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Password</label>
+                        <label>Password <span style="color: #ef4444;">*</span></label>
                         <input type="password" id="userPassword" class="form-input" required placeholder="Enter password">
                     </div>
                     <div class="form-group">
-                        <label>Role</label>
+                        <label>Role <span style="color: #ef4444;">*</span></label>
                         <select id="userRole" class="form-input" required>
                             <option value="">Select Role</option>
                             <option value="worker">Worker</option>
@@ -990,7 +981,7 @@ async function showUserManagement() {
                         </select>
                     </div>
                     <div class="form-group" id="shiftGroup" style="display: none;">
-                        <label>Assigned Shift</label>
+                        <label>Assigned Shift <span style="color: #ef4444;">*</span></label>
                         <select id="userShift" class="form-input">
                             <option value="">Select Shift</option>
                             <option value="1">Shift 1 (6AM-10AM)</option>
@@ -1001,9 +992,9 @@ async function showUserManagement() {
                         </select>
                     </div>
                     <div class="form-group" id="supervisorGroup" style="display: none;">
-                        <label>Supervisor</label>
+                        <label>Supervisor <span style="color: #ef4444;">*</span></label>
                         <select id="userSupervisor" class="form-input">
-                            <option value="">No Supervisor</option>
+                            <option value="">Select Supervisor</option>
                         </select>
                     </div>
                     <div class="modal-footer">
@@ -1015,8 +1006,7 @@ async function showUserManagement() {
         </div>
     `;
     
-    document.getElementById('dashboardContent').insertAdjacentHTML('beforeend', userMgmtHTML);
-    loadUsers();
+    document.getElementById('userManagementSection').insertAdjacentHTML('beforeend', userMgmtHTML);
     loadSupervisors();
     
     // Add form submit event listener
@@ -1028,13 +1018,23 @@ async function showUserManagement() {
     document.getElementById('userRole').addEventListener('change', (e) => {
         const role = e.target.value;
         const isWorker = role === 'worker';
-        const isSupervisor = role === 'supervisor';
+        
+        console.log('🔧 Role changed to:', role);
+        console.log('🔧 Is worker?', isWorker);
+        console.log('🔧 Shift field:', document.getElementById('shiftGroup'));
+        console.log('🔧 Supervisor field:', document.getElementById('supervisorGroup'));
         
         // Show/hide shift selection for workers
         document.getElementById('shiftGroup').style.display = isWorker ? 'block' : 'none';
         
         // Show/hide supervisor selection
         document.getElementById('supervisorGroup').style.display = isWorker ? 'block' : 'none';
+        
+        // Make fields required/optional based on role
+        document.getElementById('userShift').required = isWorker;
+        document.getElementById('userSupervisor').required = isWorker;
+        
+        console.log('✅ Fields updated! Shift display:', document.getElementById('shiftGroup').style.display);
         
         // Load appropriate supervisors
         if (isWorker) {
@@ -1118,7 +1118,6 @@ async function saveUser() {
     
     // Get values directly from form
     const username = form.querySelector('#userUsername').value.trim();
-    const fullName = form.querySelector('#userFullName').value.trim();
     const password = form.querySelector('#userPassword').value;
     const role = form.querySelector('#userRole').value;
     const shift = form.querySelector('#userShift').value;
@@ -1126,33 +1125,15 @@ async function saveUser() {
     
     console.log('Raw form values:', {
         username: username,
-        fullName: fullName,
         password: password ? '***' : 'empty',
         role: role,
         shift: shift,
         supervisor: supervisor
     });
     
-    // Build userData object
-    const userData = {
-        username: username,
-        full_name: fullName,
-        password: password,
-        role: role,
-        assigned_shift: shift || null,
-        supervisor_id: supervisor || null
-    };
-    
-    console.log('Prepared user data:', JSON.stringify({...userData, password: '***'}, null, 2));
-    
-    // Simple validation
+    // Validation
     if (!username) {
         alert('Username is required');
-        return;
-    }
-    
-    if (!fullName) {
-        alert('Full Name is required');
         return;
     }
     
@@ -1166,10 +1147,29 @@ async function saveUser() {
         return;
     }
     
-    if (!role) {
-        alert('Role is required - please select Worker or Supervisor');
-        return;
+    // REQUIRED: Workers must have shift and supervisor
+    if (role === 'worker') {
+        if (!shift) {
+            alert('⚠️ Shift is required for Workers!\nPlease select a shift.');
+            return;
+        }
+        if (!supervisor) {
+            alert('⚠️ Supervisor is required for Workers!\nPlease select a supervisor.');
+            return;
+        }
     }
+    
+    // Build userData object - use username as full_name
+    const userData = {
+        username: username,
+        full_name: username,
+        password: password,
+        role: role,
+        assigned_shift: shift || null,
+        supervisor_id: supervisor || null
+    };
+    
+    console.log('Prepared user data:', JSON.stringify({...userData, password: '***'}, null, 2));
     
     try {
         console.log('Calling API with:', userData);
@@ -1180,25 +1180,17 @@ async function saveUser() {
         
         console.log('Success! Response:', response);
         closeUserModal();
-        loadUsers();
-        alert('✅ User created successfully!\nUsername: ' + username + '\nPassword: temp123');
+        
+        // Reload the unified user table
+        await loadAllUsersUnified();
+        
+        alert('✅ User created successfully!\nUsername: ' + username);
     } catch (error) {
         console.error('Error creating user:', error);
         alert('❌ Failed to create user: ' + error.message);
     }
 }
 
-async function toggleUserStatus(userId, currentStatus) {
-    try {
-        await apiCall(`/users/${userId}`, {
-            method: 'PUT',
-            body: JSON.stringify({ is_active: !currentStatus })
-        });
-        loadUsers();
-    } catch (error) {
-        alert('Failed to update user: ' + error.message);
-    }
-}
 
 // Set today's date as default
 if (document.getElementById('dateFilter')) {

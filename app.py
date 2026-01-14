@@ -1,6 +1,10 @@
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+# Set timezone for South Africa
+SOUTH_AFRICA_TZ = ZoneInfo('Africa/Johannesburg')
 import psycopg
 from psycopg.rows import dict_row
 import bcrypt
@@ -88,14 +92,12 @@ def dashboard():
 def login():
     try:
         data = request.get_json()
-        print(f"[LOGIN] Received request: {data}")
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
         username = data.get('username')
         password = data.get('password')
-        print(f"[LOGIN] Attempting login for user: {username}")
         
         if not username or not password:
             return jsonify({'error': 'Username and password required'}), 400
@@ -104,32 +106,18 @@ def login():
         cur = conn.cursor()
         cur.execute('SELECT * FROM users WHERE username = %s AND is_active = TRUE', (username,))
         user = cur.fetchone()
-        print(f"[LOGIN] User found: {user is not None}")
         conn.close()
         
         if not user:
-            print(f"[LOGIN] User not found or inactive")
             return jsonify({'error': 'Invalid credentials'}), 401
         
         # Check if user has a password set
         if not user['password_hash']:
-            print(f"[LOGIN] User has no password hash")
             return jsonify({'error': 'User account needs password setup. Please contact admin.'}), 401
         
         # Verify password
         try:
-            print(f"[LOGIN] Verifying password for user {username}")
-            # Convert password_hash to bytes if it's a string
-            password_hash_bytes = user['password_hash']
-            if isinstance(password_hash_bytes, str):
-                password_hash_bytes = password_hash_bytes.encode('utf-8')
-            
-            print(f"[LOGIN] Hash type: {type(password_hash_bytes)}, Length: {len(password_hash_bytes) if isinstance(password_hash_bytes, (str, bytes)) else 'N/A'}")
-            
-            password_match = bcrypt.checkpw(password.encode(), password_hash_bytes)
-            print(f"[LOGIN] Password match result: {password_match}")
-            
-            if password_match:
+            if bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
                 # Use username as full_name if full_name is NULL
                 display_name = user['full_name'] if user['full_name'] else user['username']
                 
@@ -142,7 +130,6 @@ def login():
                     'supervisor_id': user['supervisor_id']
                 }, app.config['SECRET_KEY'], algorithm='HS256')
                 
-                print(f"[LOGIN] Login successful for user {username}")
                 return jsonify({
                     'token': token,
                     'user': {
@@ -153,21 +140,14 @@ def login():
                         'assigned_shift': user['assigned_shift']
                     }
                 }), 200
-            else:
-                print(f"[LOGIN] Password verification failed")
         except Exception as e:
-            print(f"[LOGIN] Password check error: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({'error': 'Password verification failed'}), 500
+            print(f"Password check error: {e}")
+            return jsonify({'error': 'Invalid credentials'}), 401
         
-        print(f"[LOGIN] Invalid credentials for user {username}")
         return jsonify({'error': 'Invalid credentials'}), 401
         
     except Exception as e:
-        print(f"[LOGIN] Login error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Login error: {e}")
         return jsonify({'error': 'Server error during login'}), 500
 
 # USER MANAGEMENT
@@ -208,23 +188,15 @@ def create_user(current_user):
         username = data.get('username', '').strip()
         full_name = data.get('full_name', '').strip()
         role = data.get('role', '').strip()
-        password = data.get('password', '').strip()
         
         if not username or not full_name or not role:
             return jsonify({'error': 'Username, full name, and role are required'}), 400
-        
-        # Use provided password or default to temp123
-        if not password:
-            password = 'temp123'
-            print(f"DEBUG: No password provided, using default: {password}")
         
         # Validate role
         if role not in ['worker', 'supervisor', 'admin']:
             return jsonify({'error': f'Invalid role: {role}'}), 400
         
-        # Hash the password with bcrypt
-        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-        print(f"DEBUG: Password hashed for user {username}")
+        password_hash = bcrypt.hashpw('temp123'.encode(), bcrypt.gensalt()).decode()
         
         conn = get_db()
         cur = conn.cursor()
@@ -253,8 +225,8 @@ def create_user(current_user):
             print(f"DEBUG: Inserting user - username={username}, role={role}, shift={assigned_shift}, supervisor={supervisor_id}")
             
             cur.execute('''
-                INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id, is_active)
-                VALUES (%s, %s, %s, %s, %s, %s, TRUE) RETURNING user_id
+                INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id
             ''', (username, password_hash, role, full_name, assigned_shift, supervisor_id))
             
             user_id = cur.fetchone()['user_id']
@@ -403,7 +375,8 @@ def scan_car(current_user):
     
     conn = get_db()
     cur = conn.cursor()
-    now = datetime.now()
+    # Get current time in South Africa timezone, then convert to naive for database
+    now = datetime.now(SOUTH_AFRICA_TZ).replace(tzinfo=None)
     today = now.date()
     shift_number = get_current_shift()
     
@@ -694,6 +667,48 @@ def export_excel(current_user):
     
     return send_file(output, download_name=filename, as_attachment=True, 
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/api/leaderboard', methods=['GET'])
+@token_required
+def get_leaderboard(current_user_id, user_role):
+    """Get worker leaderboard with scan counts"""
+    period = request.args.get('period', 'today')
+    
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Build date filter based on period
+    if period == 'today':
+        date_filter = "AND DATE(s.scan_time) = CURRENT_DATE"
+    elif period == 'week':
+        date_filter = "AND s.scan_time >= CURRENT_DATE - INTERVAL '7 days'"
+    elif period == 'month':
+        date_filter = "AND s.scan_time >= CURRENT_DATE - INTERVAL '30 days'"
+    else:  # all time
+        date_filter = ""
+    
+    query = f"""
+        SELECT 
+            u.user_id,
+            u.username,
+            u.full_name,
+            u.assigned_shift,
+            s2.full_name as supervisor_name,
+            COUNT(s.scan_id) as scan_count
+        FROM users u
+        LEFT JOIN scans s ON u.user_id = s.worker_id {date_filter}
+        LEFT JOIN users s2 ON u.supervisor_id = s2.user_id
+        WHERE u.role = 'worker' AND u.is_active = TRUE
+        GROUP BY u.user_id, u.username, u.full_name, u.assigned_shift, s2.full_name
+        ORDER BY scan_count DESC
+        LIMIT 20
+    """
+    
+    cur.execute(query)
+    leaderboard = cur.fetchall()
+    conn.close()
+    
+    return jsonify(leaderboard)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

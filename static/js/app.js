@@ -955,6 +955,16 @@ async function exportExcel() {
 
 // User Management
 async function showUserManagement() {
+    console.log('🚀 showUserManagement() called!');
+    console.log('🚀 userManagementSection exists:', !!document.getElementById('userManagementSection'));
+    
+    // IMPORTANT: Remove any existing modal first to prevent duplicates
+    const existingModal = document.getElementById('userModal');
+    if (existingModal) {
+        console.log('🗑️ Removing old modal...');
+        existingModal.remove();
+    }
+    
     // Only create the modal HTML, not another user table
     const userMgmtHTML = `
         <div id="userModal" class="modal">
@@ -980,10 +990,10 @@ async function showUserManagement() {
                             <option value="admin">Admin</option>
                         </select>
                     </div>
-                    <div class="form-group" id="shiftGroup" style="display: none;">
+                    <div class="form-group" id="shiftGroup">
                         <label>Assigned Shift <span style="color: #ef4444;">*</span></label>
                         <select id="userShift" class="form-input">
-                            <option value="">Select Shift</option>
+                            <option value="">Select Shift (Optional for Supervisors/Admins)</option>
                             <option value="1">Shift 1 (6AM-10AM)</option>
                             <option value="2">Shift 2 (10AM-2PM)</option>
                             <option value="3">Shift 3 (2PM-6PM)</option>
@@ -991,10 +1001,10 @@ async function showUserManagement() {
                             <option value="5">Shift 5 (10PM-2AM)</option>
                         </select>
                     </div>
-                    <div class="form-group" id="supervisorGroup" style="display: none;">
+                    <div class="form-group" id="supervisorGroup">
                         <label>Supervisor <span style="color: #ef4444;">*</span></label>
                         <select id="userSupervisor" class="form-input">
-                            <option value="">Select Supervisor</option>
+                            <option value="">Select Supervisor (Required for Workers)</option>
                         </select>
                     </div>
                     <div class="modal-footer">
@@ -1009,38 +1019,55 @@ async function showUserManagement() {
     document.getElementById('userManagementSection').insertAdjacentHTML('beforeend', userMgmtHTML);
     loadSupervisors();
     
+    console.log('📝 Modal HTML inserted');
+    console.log('📝 userRole element:', document.getElementById('userRole'));
+    console.log('📝 shiftGroup element:', document.getElementById('shiftGroup'));
+    console.log('📝 supervisorGroup element:', document.getElementById('supervisorGroup'));
+    
     // Add form submit event listener
     document.getElementById('userForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         await saveUser();
     });
     
-    document.getElementById('userRole').addEventListener('change', (e) => {
-        const role = e.target.value;
-        const isWorker = role === 'worker';
-        
-        console.log('🔧 Role changed to:', role);
-        console.log('🔧 Is worker?', isWorker);
-        console.log('🔧 Shift field:', document.getElementById('shiftGroup'));
-        console.log('🔧 Supervisor field:', document.getElementById('supervisorGroup'));
-        
-        // Show/hide shift selection for workers
-        document.getElementById('shiftGroup').style.display = isWorker ? 'block' : 'none';
-        
-        // Show/hide supervisor selection
-        document.getElementById('supervisorGroup').style.display = isWorker ? 'block' : 'none';
-        
-        // Make fields required/optional based on role
-        document.getElementById('userShift').required = isWorker;
-        document.getElementById('userSupervisor').required = isWorker;
-        
-        console.log('✅ Fields updated! Shift display:', document.getElementById('shiftGroup').style.display);
-        
-        // Load appropriate supervisors
-        if (isWorker) {
-            loadSupervisors();
-        }
-    });
+    const roleSelect = document.getElementById('userRole');
+    if (roleSelect) {
+        console.log('✅ Role select found! Adding event listener...');
+        roleSelect.addEventListener('change', (e) => {
+            const role = e.target.value;
+            const isWorker = role === 'worker';
+            
+            console.log('🔧 Role changed to:', role);
+            console.log('🔧 Is worker?', isWorker);
+            console.log('🔧 Shift field:', document.getElementById('shiftGroup'));
+            console.log('🔧 Supervisor field:', document.getElementById('supervisorGroup'));
+            
+            // Show/hide shift selection for workers
+            const shiftGroup = document.getElementById('shiftGroup');
+            const supervisorGroup = document.getElementById('supervisorGroup');
+            
+            if (shiftGroup && supervisorGroup) {
+                shiftGroup.style.display = isWorker ? 'block' : 'none';
+                supervisorGroup.style.display = isWorker ? 'block' : 'none';
+                
+                // Make fields required/optional based on role
+                document.getElementById('userShift').required = isWorker;
+                document.getElementById('userSupervisor').required = isWorker;
+                
+                console.log('✅ Fields updated! Shift display:', shiftGroup.style.display);
+            } else {
+                console.error('❌ Shift or Supervisor fields not found!');
+            }
+            
+            // Load appropriate supervisors
+            if (isWorker) {
+                loadSupervisors();
+            }
+        });
+        console.log('✅ Event listener attached successfully!');
+    } else {
+        console.error('❌ Role select element not found!');
+    }
 }
 
 async function loadUsers() {
@@ -1101,9 +1128,63 @@ function showAddUserModal() {
     document.getElementById('modalTitle').textContent = 'Add User';
     document.getElementById('userForm').reset();
     
+    // FORCE CHECK: Make sure shift and supervisor fields exist
+    let shiftGroup = document.getElementById('shiftGroup');
+    let supervisorGroup = document.getElementById('supervisorGroup');
+    
+    console.log('🔍 Checking fields...');
+    console.log('Shift group exists?', !!shiftGroup);
+    console.log('Supervisor group exists?', !!supervisorGroup);
+    
+    // If fields don't exist, CREATE THEM NOW!
+    if (!shiftGroup || !supervisorGroup) {
+        console.log('⚠️ Fields missing! Creating them now...');
+        
+        const roleGroup = document.getElementById('userRole').closest('.form-group');
+        
+        if (!shiftGroup) {
+            const shiftHTML = `
+                <div class="form-group" id="shiftGroup">
+                    <label>Assigned Shift <span style="color: #ef4444;">*</span></label>
+                    <select id="userShift" class="form-input">
+                        <option value="">Select Shift</option>
+                        <option value="1">Shift 1 (6AM-10AM)</option>
+                        <option value="2">Shift 2 (10AM-2PM)</option>
+                        <option value="3">Shift 3 (2PM-6PM)</option>
+                        <option value="4">Shift 4 (6PM-10PM)</option>
+                        <option value="5">Shift 5 (10PM-2AM)</option>
+                    </select>
+                </div>
+            `;
+            roleGroup.insertAdjacentHTML('afterend', shiftHTML);
+            console.log('✅ Shift field created!');
+        }
+        
+        if (!supervisorGroup) {
+            const supervisorHTML = `
+                <div class="form-group" id="supervisorGroup">
+                    <label>Supervisor <span style="color: #ef4444;">*</span></label>
+                    <select id="userSupervisor" class="form-input">
+                        <option value="">Select Supervisor</option>
+                    </select>
+                </div>
+            `;
+            const shiftGroupNow = document.getElementById('shiftGroup');
+            if (shiftGroupNow) {
+                shiftGroupNow.insertAdjacentHTML('afterend', supervisorHTML);
+            } else {
+                roleGroup.insertAdjacentHTML('afterend', supervisorHTML);
+            }
+            console.log('✅ Supervisor field created!');
+            
+            // Load supervisors
+            loadSupervisors();
+        }
+    }
+    
     // Hide shift and supervisor fields initially (until worker is selected)
-    document.getElementById('shiftGroup').style.display = 'none';
-    document.getElementById('supervisorGroup').style.display = 'none';
+    if (shiftGroup) shiftGroup.style.display = 'block';
+    if (supervisorGroup) supervisorGroup.style.display = 'block';
     
     document.getElementById('userModal').classList.add('active');
 }

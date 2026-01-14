@@ -61,7 +61,7 @@ def create_tables():
                 password_hash VARCHAR(255) NOT NULL,
                 role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'supervisor', 'worker')),
                 full_name VARCHAR(100) NOT NULL,
-                assigned_shift INTEGER CHECK (assigned_shift BETWEEN 1 AND 4),
+                assigned_shift INTEGER CHECK (assigned_shift BETWEEN 1 AND 5),
                 supervisor_id INTEGER REFERENCES users(user_id),
                 is_active BOOLEAN DEFAULT TRUE,
                 created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP

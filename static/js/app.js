@@ -1,8 +1,7 @@
 // API Configuration
-// VERSION: v3.0-DEBUG-WITH-DOWNLOAD-ICON
-// Last Updated: 2026-01-13 15:45
-// Features: Excel download per worker + Shift/Supervisor fields + Debug logging
-// Excel Icon: 📥 (download arrow)
+// VERSION: v4.0-HOLDING-AREA-COLOR-FLAGS - FIXED VERSION
+// Last Updated: 2026-01-19
+// Features: All bugs fixed - ready to use
 const API_URL = window.location.origin + '/api';
 let currentUser = null;
 let authToken = null;
@@ -45,7 +44,8 @@ async function apiCall(endpoint, options = {}) {
             headers: { ...headers, ...options.headers }
         });
         
-        if (response.status === 401) {
+        // Only redirect on 401 if NOT login endpoint (login endpoint handles 401 as invalid credentials)
+        if (response.status === 401 && endpoint !== '/login') {
             clearToken();
             window.location.href = '/';
             return null;
@@ -89,18 +89,58 @@ function formatDate(dateString) {
 
 function getStatusBadgeClass(status) {
     const classes = {
-        'active': 'badge-success',
-        'warning': 'badge-warning',
-        'overdue': 'badge-danger',
-        'normal': 'badge-success'
+        'green': 'badge-success',
+        'amber': 'badge-warning',
+        'red': 'badge-danger'
     };
     return classes[status] || 'badge-success';
 }
 
+function getStatusEmoji(status) {
+    const emojis = {
+        'green': '🟢',
+        'amber': '🟡',
+        'red': '🔴'
+    };
+    return emojis[status] || '🟢';
+}
+
+function getStatusName(status) {
+    const names = {
+        'green': 'Normal',
+        'amber': 'Warning',
+        'red': 'Overdue'
+    };
+    return names[status] || 'Normal';
+}
+
+function calculateStatusFromHours(hours) {
+    "Calculate status based on hours parked"
+    if (hours < 4) {
+        return 'green';
+    } else if (hours < 12) {
+        return 'amber';
+    } else {
+        return 'red';
+    }
+}
+
+function getStatusDisplay(status) {
+    const emoji = getStatusEmoji(status);
+    const name = getStatusName(status);
+    return `${emoji} ${name}`;
+}
+
 function calculateHoursParked(firstScan, lastScan) {
-    // Calculate hours from FIRST scan to NOW (not to last scan)
     const diff = new Date() - new Date(firstScan);
     return (diff / (1000 * 60 * 60)).toFixed(1);
+}
+
+function calculateTimeDifference(firstScan, lastScan) {
+    const diff = new Date(lastScan) - new Date(firstScan);
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    return `${hours}h ${minutes}m`;
 }
 
 // Login Page
@@ -176,11 +216,9 @@ if (document.getElementById('dashboardContent')) {
 }
 
 function initDashboard() {
-    // Set user info
     document.getElementById('userName').textContent = currentUser.full_name;
     document.getElementById('userRole').textContent = currentUser.role;
     
-    // Update navbar title based on role
     const navbarBrand = document.querySelector('.navbar-brand span:last-child');
     if (navbarBrand) {
         if (currentUser.role === 'admin') {
@@ -198,7 +236,6 @@ function initDashboard() {
         window.location.href = '/';
     });
     
-    // Load role-specific dashboard
     if (currentUser.role === 'worker') {
         loadWorkerDashboard();
     } else if (currentUser.role === 'supervisor') {
@@ -206,23 +243,25 @@ function initDashboard() {
     } else if (currentUser.role === 'admin') {
         loadAdminDashboard();
     }
-    
-    document.getElementById('shiftFilter')?.addEventListener('change', loadCars);
-    document.getElementById('statusFilter')?.addEventListener('change', loadCars);
-    document.getElementById('dateFilter')?.addEventListener('change', loadCars);
 }
 
 function loadWorkerDashboard() {
     showScannerSection();
     loadDashboardData();
-    loadCars();
+    loadHoldingCars();
+    loadParkedCars();
     document.getElementById('userManagementSection')?.remove();
-    // Workers don't see search
     document.getElementById('navbarSearch').style.display = 'none';
+    
+    // Auto-refresh data every 60 seconds to update times and status
+    setInterval(() => {
+        loadHoldingCars();
+        loadParkedCars();
+        loadDashboardData();
+    }, 60000);
 }
 
 function loadSupervisorDashboard() {
-    // Show search for supervisors
     document.getElementById('navbarSearch').style.display = 'flex';
     document.getElementById('globalSearch').placeholder = '🔍 Search your team workers...';
     
@@ -230,14 +269,26 @@ function loadSupervisorDashboard() {
     loadCars();
     showSupervisorDashboard();
     document.getElementById('userManagementSection')?.remove();
+    
+    // Auto-refresh data every 60 seconds to update times and status
+    setInterval(() => {
+        loadCars();
+        loadAdminHoldingCars();
+        loadDashboardData();
+    }, 60000);
 }
 
 function loadAdminDashboard() {
-    // Hide navbar search (we'll use integrated search in the table)
     document.getElementById('navbarSearch').style.display = 'none';
-    
-    // Create the new unified admin dashboard
     createUnifiedAdminDashboard();
+    
+    // Auto-refresh data every 60 seconds to update times and status
+    setInterval(() => {
+        loadUsers();
+        loadAdminHoldingCars();
+        loadCars();
+        loadDashboardData();
+    }, 60000);
 }
 
 function createUnifiedAdminDashboard() {
@@ -245,7 +296,6 @@ function createUnifiedAdminDashboard() {
     
     if (!mainContent) return;
     
-    // Build complete admin dashboard HTML
     mainContent.innerHTML = `
         <!-- Stats Cards -->
         <div class="stats-grid" style="margin-bottom: 24px;">
@@ -259,15 +309,15 @@ function createUnifiedAdminDashboard() {
             
             <div class="stat-card">
                 <div class="stat-header">
-                    <div class="stat-icon success">✅</div>
+                    <div class="stat-icon success">🟢</div>
                 </div>
                 <div class="stat-value" id="activeCars">0</div>
-                <div class="stat-label">Active (< 4 hours)</div>
+                <div class="stat-label">Normal (< 4 hours)</div>
             </div>
             
             <div class="stat-card">
                 <div class="stat-header">
-                    <div class="stat-icon warning">⚠️</div>
+                    <div class="stat-icon warning">🟡</div>
                 </div>
                 <div class="stat-value" id="warningCars">0</div>
                 <div class="stat-label">Warning (4-12 hours)</div>
@@ -275,7 +325,7 @@ function createUnifiedAdminDashboard() {
             
             <div class="stat-card">
                 <div class="stat-header">
-                    <div class="stat-icon danger">🚨</div>
+                    <div class="stat-icon danger">🔴</div>
                 </div>
                 <div class="stat-value" id="overdueCars">0</div>
                 <div class="stat-label">Overdue (12+ hours)</div>
@@ -294,7 +344,6 @@ function createUnifiedAdminDashboard() {
                 </div>
             </div>
             <div class="card-body">
-                <!-- Filter Bar -->
                 <div class="admin-filter-bar">
                     <div class="role-filter-buttons">
                         <button onclick="filterUsersByRole('')" id="filterAll" class="role-btn active">
@@ -318,7 +367,6 @@ function createUnifiedAdminDashboard() {
                     </div>
                 </div>
                 
-                <!-- Unified Table -->
                 <div class="unified-table-container">
                     <table class="unified-user-table">
                         <thead>
@@ -344,12 +392,57 @@ function createUnifiedAdminDashboard() {
             </div>
         </div>
         
-        <!-- Vehicles Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">🚗 Parked Vehicles</h2>
+        <!-- Holding Area Vehicles Table -->
+        <div class="card" style="margin-bottom: 32px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+                <h2 class="card-title" style="color: white;">📦 Holding Area Vehicles</h2>
                 <div class="card-actions">
-                    <button onclick="exportExcel()" class="btn-download-excel">
+                    <button onclick="exportHoldingExcel()" class="btn-download-excel" style="background: white; color: #d97706;">
+                        <span style="font-size: 20px;">📥</span>
+                        <span>Download Excel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="filter-bar">
+                    <input type="date" id="holdingDateFilter" class="filter-select">
+                    <select id="holdingShiftFilter" class="filter-select" onchange="loadAdminHoldingCars()">
+                        <option value="">All Shifts</option>
+                        <option value="1">Day Shift (6AM-6PM)</option>
+                        <option value="2">Night Shift (6PM-6AM)</option>
+                    </select>
+                </div>
+                
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CAR ID</th>
+                                <th>VESSEL</th>
+                                <th>AREA</th>
+                                <th>UNIT</th>
+                                <th>WORKER</th>
+                                <th>TIME</th>
+                                <th>HOURS</th>
+                                <th>STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingCarsTableBody">
+                            <tr>
+                                <td colspan="8" style="text-align: center; padding: 40px;">No vehicles in holding area</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Parked Vehicles Table -->
+        <div class="card" style="margin-bottom: 32px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                <h2 class="card-title" style="color: white;">🚗 Parked Vehicles</h2>
+                <div class="card-actions">
+                    <button onclick="exportExcel()" class="btn-download-excel" style="background: white; color: #8b5cf6;">
                         <span style="font-size: 20px;">📥</span>
                         <span>Download Excel</span>
                     </button>
@@ -358,19 +451,16 @@ function createUnifiedAdminDashboard() {
             <div class="card-body">
                 <div class="filter-bar">
                     <input type="date" id="dateFilter" class="filter-select">
-                    <select id="shiftFilter" class="filter-select">
+                    <select id="shiftFilter" class="filter-select" onchange="loadCars()">
                         <option value="">All Shifts</option>
-                        <option value="1">Shift 1 (6AM-10AM)</option>
-                        <option value="2">Shift 2 (10AM-2PM)</option>
-                        <option value="3">Shift 3 (2PM-6PM)</option>
-                        <option value="4">Shift 4 (6PM-10PM)</option>
-                        <option value="5">Shift 5 (10PM-2AM)</option>
+                        <option value="1">Day Shift (6AM-6PM)</option>
+                        <option value="2">Night Shift (6PM-6AM)</option>
                     </select>
-                    <select id="statusFilter" class="filter-select">
+                    <select id="statusFilter" class="filter-select" onchange="loadCars()">
                         <option value="">All Status</option>
-                        <option value="active">Active</option>
-                        <option value="warning">Warning</option>
-                        <option value="overdue">Overdue</option>
+                        <option value="green">🟢 Normal</option>
+                        <option value="amber">🟡 Warning</option>
+                        <option value="red">🔴 Overdue</option>
                     </select>
                 </div>
                 
@@ -381,14 +471,14 @@ function createUnifiedAdminDashboard() {
                                 <th>CAR ID</th>
                                 <th>FIRST SCAN</th>
                                 <th>LAST SCAN</th>
+                                <th>TIME DIFF</th>
                                 <th>SCANS</th>
                                 <th>HOURS</th>
                                 <th>STATUS</th>
-                                <th>OVERDUE BY</th>
                                 <th>WORKER</th>
                             </tr>
                         </thead>
-                        <tbody id="carsTableBody">
+                        <tbody id="parkedCarsTableBody">
                             <tr>
                                 <td colspan="8" style="text-align: center; padding: 40px;">Loading...</td>
                             </tr>
@@ -398,26 +488,24 @@ function createUnifiedAdminDashboard() {
             </div>
         </div>
         
-        <!-- User Modal Container -->
         <div id="userManagementSection"></div>
     `;
     
-    // Set today's date
-    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('holdingDateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('holdingDateFilter').addEventListener('change', loadAdminHoldingCars);
     
-    // Add event listeners
+    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('dateFilter').addEventListener('change', loadCars);
     document.getElementById('shiftFilter').addEventListener('change', loadCars);
     document.getElementById('statusFilter').addEventListener('change', loadCars);
-    document.getElementById('dateFilter').addEventListener('change', loadCars);
     
-    // Load all data
     loadDashboardData();
-    loadCars();
     loadAllUsersUnified();
-    showUserManagement(); // This adds the modal
+    showUserManagement();
+    loadAdminHoldingCars();
+    loadCars();
 }
 
-// Store users globally for filtering
 let allUnifiedUsers = [];
 let currentRoleFilter = '';
 
@@ -439,7 +527,6 @@ function displayUnifiedUserTable(users) {
     
     if (!tbody) return;
     
-    // Update count
     if (userCount) {
         userCount.textContent = `${users.length} user${users.length !== 1 ? 's' : ''}`;
     }
@@ -492,7 +579,6 @@ function displayUnifiedUserTable(users) {
 function filterUsersByRole(role) {
     currentRoleFilter = role;
     
-    // Update button styles
     document.querySelectorAll('.role-btn').forEach(btn => {
         btn.classList.remove('active');
     });
@@ -506,7 +592,6 @@ function filterUsersByRole(role) {
         activeBtn.classList.add('active');
     }
     
-    // Apply filters
     applyUserFilters();
 }
 
@@ -519,12 +604,10 @@ function applyUserFilters() {
     
     let filtered = allUnifiedUsers;
     
-    // Filter by role
     if (currentRoleFilter) {
         filtered = filtered.filter(u => u.role === currentRoleFilter);
     }
     
-    // Filter by search term - search username only
     if (searchTerm) {
         filtered = filtered.filter(u => 
             u.username.toLowerCase().includes(searchTerm)
@@ -545,8 +628,6 @@ async function deleteUser(userId, userName) {
         });
         
         alert(`${userName} has been deleted successfully!`);
-        
-        // Reload users
         await loadAllUsersUnified();
     } catch (error) {
         console.error('Delete failed:', error);
@@ -564,6 +645,100 @@ function showSupervisorDashboard() {
                 <div id="supervisorWorkersList"></div>
             </div>
         </div>
+        
+        <!-- Holding Area Vehicles Table -->
+        <div class="card" style="margin-bottom: 32px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+                <h2 class="card-title" style="color: white;">📦 Holding Area Vehicles</h2>
+                <div class="card-actions">
+                    <button onclick="exportHoldingExcel()" class="btn-download-excel" style="background: white; color: #d97706;">
+                        <span style="font-size: 20px;">📥</span>
+                        <span>Download Excel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="filter-bar">
+                    <input type="date" id="holdingDateFilter" class="filter-select">
+                    <select id="holdingShiftFilter" class="filter-select" onchange="loadAdminHoldingCars()">
+                        <option value="">All Shifts</option>
+                        <option value="1">Day Shift (6AM-6PM)</option>
+                        <option value="2">Night Shift (6PM-6AM)</option>
+                    </select>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CAR ID</th>
+                                <th>VESSEL</th>
+                                <th>AREA</th>
+                                <th>UNIT</th>
+                                <th>WORKER</th>
+                                <th>TIME</th>
+                                <th>HOURS</th>
+                                <th>STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingCarsTableBody">
+                            <tr>
+                                <td colspan="8" style="text-align: center; padding: 40px;">No vehicles in holding area</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Parked Vehicles Table -->
+        <div class="card" style="margin-bottom: 32px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                <h2 class="card-title" style="color: white;">🚗 Parked Vehicles</h2>
+                <div class="card-actions">
+                    <button onclick="exportExcel()" class="btn-download-excel" style="background: white; color: #8b5cf6;">
+                        <span style="font-size: 20px;">📥</span>
+                        <span>Download Excel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="filter-bar">
+                    <input type="date" id="dateFilter" class="filter-select">
+                    <select id="shiftFilter" class="filter-select" onchange="loadCars()">
+                        <option value="">All Shifts</option>
+                        <option value="1">Day Shift (6AM-6PM)</option>
+                        <option value="2">Night Shift (6PM-6AM)</option>
+                    </select>
+                    <select id="statusFilter" class="filter-select" onchange="loadCars()">
+                        <option value="">All Status</option>
+                        <option value="green">🟢 Normal</option>
+                        <option value="amber">🟡 Warning</option>
+                        <option value="red">🔴 Overdue</option>
+                    </select>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CAR ID</th>
+                                <th>FIRST SCAN</th>
+                                <th>LAST SCAN</th>
+                                <th>TIME DIFF</th>
+                                <th>SCANS</th>
+                                <th>HOURS</th>
+                                <th>STATUS</th>
+                                <th>WORKER</th>
+                            </tr>
+                        </thead>
+                        <tbody id="parkedCarsTableBody">
+                            <tr>
+                                <td colspan="8" style="text-align: center; padding: 40px;">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     `;
     
     const mainContent = document.querySelector('.main-content');
@@ -571,10 +746,20 @@ function showSupervisorDashboard() {
     if (statsGrid && mainContent) {
         statsGrid.insertAdjacentHTML('afterend', dashboardHTML);
     }
+    
+    document.getElementById('holdingDateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('holdingDateFilter').addEventListener('change', loadAdminHoldingCars);
+    
+    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('dateFilter').addEventListener('change', loadCars);
+    document.getElementById('shiftFilter').addEventListener('change', loadCars);
+    document.getElementById('statusFilter').addEventListener('change', loadCars);
+    
     loadSupervisorWorkers();
+    loadAdminHoldingCars();
+    loadCars();
 }
 
-// Global Search Handler (for Supervisor navbar search)
 async function handleGlobalSearch(event) {
     const searchTerm = event.target.value.toLowerCase().trim();
     const dropdown = document.getElementById('searchDropdown');
@@ -591,7 +776,6 @@ async function handleGlobalSearch(event) {
         let filtered;
         
         if (currentUser.role === 'supervisor') {
-            // Supervisors see only their team
             filtered = users.filter(u => 
                 u.role === 'worker' && 
                 u.supervisor_id === currentUser.user_id &&
@@ -638,7 +822,6 @@ function displaySearchDropdown(users) {
     dropdown.style.display = 'block';
 }
 
-// Close dropdown when clicking outside
 document.addEventListener('click', (e) => {
     const searchInput = document.getElementById('globalSearch');
     const dropdown = document.getElementById('searchDropdown');
@@ -685,18 +868,20 @@ async function loadCars() {
     try {
         const cars = await apiCall(`/cars?${params}`);
         console.log('Cars loaded:', cars);
-        displayCars(cars);
+        const parkedCars = cars.filter(c => !c.is_in_holding);
+        displayCars(parkedCars);
     } catch (error) {
         console.error('Failed to load cars:', error);
         const tbody = document.getElementById('carsTableBody');
         if (tbody) {
-            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #ef4444;">Error loading cars. Please refresh the page.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #ef4444;">Error loading cars. Please refresh the page.</td></tr>';
         }
     }
 }
 
 function displayCars(cars) {
-    const tbody = document.getElementById('carsTableBody');
+    // Support both carsTableBody (admin/supervisor dashboards) and parkedCarsTableBody (worker dashboard)
+    const tbody = document.getElementById('carsTableBody') || document.getElementById('parkedCarsTableBody');
     
     console.log('Displaying cars:', cars ? cars.length : 0);
     
@@ -711,21 +896,17 @@ function displayCars(cars) {
     }
     
     tbody.innerHTML = cars.map(car => {
-        const hoursParked = calculateHoursParked(car.first_scan_time, car.last_scan_time);
+        const timeDiff = calculateTimeDifference(car.first_scan_time, car.last_scan_time);
         
-        // Calculate overdue time display
-        let overdueDisplay = '';
-        if (hoursParked >= 12) {
-            const hours = Math.floor(hoursParked);
-            const minutes = Math.floor((hoursParked - hours) * 60);
-            overdueDisplay = `<span style="color: #ef4444; font-weight: bold;">🚨 ${hours}h ${minutes}m</span>`;
-        } else if (hoursParked >= 4) {
-            const hours = Math.floor(hoursParked);
-            const minutes = Math.floor((hoursParked - hours) * 60);
-            overdueDisplay = `<span style="color: #f59e0b; font-weight: bold;">⚠️ ${hours}h ${minutes}m</span>`;
-        }
+        // Calculate hours from LAST SCAN TIME to NOW (not from first to last)
+        const lastScanTime = new Date(car.last_scan_time);
+        const now = new Date();
+        const hoursFromLastScan = (now - lastScanTime) / (1000 * 60 * 60);
         
-        // Make worker name clickable if available
+        // Calculate status based on hours from last scan to now
+        const calculatedStatus = calculateStatusFromHours(hoursFromLastScan);
+        const statusDisplay = getStatusDisplay(calculatedStatus);
+        
         const workerDisplay = car.last_worker_id 
             ? `<a href="#" onclick="showWorkerProfile(${car.last_worker_id}); return false;" style="color: #6366f1; text-decoration: none; font-weight: 600;">${car.last_worker || 'N/A'}</a>`
             : (car.last_worker || 'N/A');
@@ -735,10 +916,10 @@ function displayCars(cars) {
                 <td><strong>${car.car_identifier}</strong></td>
                 <td>${formatDateTime(car.first_scan_time)}</td>
                 <td>${formatDateTime(car.last_scan_time)}</td>
+                <td><span style="color: #64748b; font-weight: 600;">${timeDiff}</span></td>
                 <td><strong>${car.scan_count}x</strong></td>
-                <td>${hoursParked}h</td>
-                <td><span class="badge ${getStatusBadgeClass(car.status)}">${car.status}</span></td>
-                <td>${overdueDisplay || '-'}</td>
+                <td>${hoursFromLastScan.toFixed(1)}h</td>
+                <td>${statusDisplay}</td>
                 <td>${workerDisplay}</td>
             </tr>
         `;
@@ -748,26 +929,41 @@ function displayCars(cars) {
 }
 
 function showScannerSection() {
-    // For workers: Reorganize layout - scanner at top left, stats below in grid
     const mainContent = document.querySelector('.main-content');
     const statsGrid = document.querySelector('.stats-grid');
     
-    // Hide original stats temporarily
     if (statsGrid) {
         statsGrid.style.display = 'none';
     }
     
     const scannerHTML = `
         <div style="display: grid; grid-template-columns: 1fr; gap: 24px; margin-bottom: 24px;">
-            <!-- Scanner Box - Prominent at Top -->
             <div class="card" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); border: none;">
-                <div class="card-header" style="background: transparent; border: none; padding: 24px 28px;">
+                <div class="card-header" style="background: transparent; border: none; padding: 24px 28px; display: flex; justify-content: space-between; align-items: center;">
                     <h2 class="card-title" style="color: white; font-size: 24px; margin: 0;">🔍 Scan Vehicle</h2>
+                    <button onclick="endSession()" style="
+                        padding: 12px 24px;
+                        background: rgba(255,255,255,0.2);
+                        color: white;
+                        border: 2px solid white;
+                        border-radius: 10px;
+                        font-size: 15px;
+                        font-weight: 700;
+                        cursor: pointer;
+                        transition: all 0.3s;
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                    " onmouseover="this.style.background='white'; this.style.color='#059669';" 
+                       onmouseout="this.style.background='rgba(255,255,255,0.2)'; this.style.color='white';">
+                        <span style="font-size: 18px;">🚪</span>
+                        <span>End Session</span>
+                    </button>
                 </div>
                 <div class="card-body" style="padding: 0 28px 28px 28px;">
                     <div style="background: rgba(255,255,255,0.15); backdrop-filter: blur(10px); border-radius: 16px; padding: 32px;">
                         <h3 style="margin-bottom: 20px; font-size: 18px; color: white; font-weight: 600;">Enter or Scan Car ID</h3>
-                        <div style="display: flex; gap: 12px;">
+                        <div style="display: flex; gap: 12px; margin-bottom: 20px;">
                             <input type="text" id="manualCarId" 
                                    placeholder="Enter Car ID or Barcode" 
                                    autofocus 
@@ -777,15 +973,55 @@ function showScannerSection() {
                                 🚀 SCAN
                             </button>
                         </div>
+                        
+                        <div style="background: rgba(255,255,255,0.1); padding: 16px; border-radius: 12px; margin-bottom: 20px;">
+                            <h4 style="color: white; font-size: 16px; margin-bottom: 12px;">📍 Location</h4>
+                            <div style="display: flex; gap: 12px;">
+                                <label style="flex: 1; background: white; padding: 16px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: all 0.2s;" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'">
+                                    <input type="radio" name="carLocation" value="holding" id="locationHolding" style="width: 20px; height: 20px; cursor: pointer;">
+                                    <span style="font-weight: 600; color: #059669; font-size: 16px;">📦 Holding Area</span>
+                                </label>
+                                <label style="flex: 1; background: white; padding: 16px; border-radius: 10px; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: all 0.2s;" onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'">
+                                    <input type="radio" name="carLocation" value="parked" id="locationParked" checked style="width: 20px; height: 20px; cursor: pointer;">
+                                    <span style="font-weight: 600; color: #059669; font-size: 16px;">🅿️ Parked</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div id="holdingAreaFields" style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 12px; display: none;">
+                            <h4 style="color: white; font-size: 16px; margin-bottom: 16px;">📦 Holding Area Details</h4>
+                            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+                                <div>
+                                    <label style="color: rgba(255,255,255,0.9); font-size: 13px; display: block; margin-bottom: 6px;">Vessel Name</label>
+                                    <input type="text" id="vesselName" placeholder="Ship/Truck name" 
+                                           style="width: 100%; padding: 10px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.3); font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="color: rgba(255,255,255,0.9); font-size: 13px; display: block; margin-bottom: 6px;">Vessel Type</label>
+                                    <select id="vesselType" style="width: 100%; padding: 10px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.3); font-size: 14px;">
+                                        <option value="ship">Ship</option>
+                                        <option value="truck">Truck</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="color: rgba(255,255,255,0.9); font-size: 13px; display: block; margin-bottom: 6px;">Holding Area</label>
+                                    <select id="holdingArea" style="width: 100%; padding: 10px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.3); font-size: 14px;">
+                                        <option value="">Select Area</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="color: rgba(255,255,255,0.9); font-size: 13px; display: block; margin-bottom: 6px;">Stack Number</label>
+                                    <input type="text" id="stackNumber" placeholder="Unit/Stack" 
+                                           style="width: 100%; padding: 10px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.3); font-size: 14px;">
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div id="scanResult" style="display: none; margin-top: 20px; padding: 16px; border-radius: 12px; background: rgba(255,255,255,0.95); color: #059669; font-weight: 600; font-size: 16px;"></div>
-                        <p style="margin-top: 24px; font-size: 14px; color: rgba(255,255,255,0.9); text-align: center;">
-                            💡 Tip: Use your phone camera to scan QR codes or barcodes
-                        </p>
                     </div>
                 </div>
             </div>
             
-            <!-- Stats Grid Below Scanner -->
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
                 <div class="stat-card">
                     <div class="stat-header">
@@ -797,15 +1033,15 @@ function showScannerSection() {
                 
                 <div class="stat-card">
                     <div class="stat-header">
-                        <div class="stat-icon success">✅</div>
+                        <div class="stat-icon success">🟢</div>
                     </div>
                     <div class="stat-value" id="activeCars">0</div>
-                    <div class="stat-label">Active (< 4 hours)</div>
+                    <div class="stat-label">Normal (< 4 hours)</div>
                 </div>
                 
                 <div class="stat-card">
                     <div class="stat-header">
-                        <div class="stat-icon warning">⚠️</div>
+                        <div class="stat-icon warning">🟡</div>
                     </div>
                     <div class="stat-value" id="warningCars">0</div>
                     <div class="stat-label">Warning (4-12 hours)</div>
@@ -813,17 +1049,127 @@ function showScannerSection() {
                 
                 <div class="stat-card">
                     <div class="stat-header">
-                        <div class="stat-icon danger">🚨</div>
+                        <div class="stat-icon danger">🔴</div>
                     </div>
                     <div class="stat-value" id="overdueCars">0</div>
                     <div class="stat-label">Overdue (12+ hours)</div>
                 </div>
             </div>
         </div>
+        
+        <!-- SPACING -->
+        <div style="height: 32px;"></div>
+        
+        <!-- Holding Area Table -->
+        <div class="card" style="margin-bottom: 32px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+                <h2 class="card-title" style="color: white;">📦 Holding Area Vehicles</h2>
+                <div class="card-actions">
+                    <button onclick="exportHoldingExcel()" class="btn-download-excel" style="background: white; color: #d97706;">
+                        <span style="font-size: 20px;">📥</span>
+                        <span>Download Excel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="filter-bar">
+                    <input type="date" id="holdingDateFilter" class="filter-select">
+                    <select id="holdingShiftFilter" class="filter-select" onchange="loadAdminHoldingCars()">
+                        <option value="">All Shifts</option>
+                        <option value="1">Day Shift (6AM-6PM)</option>
+                        <option value="2">Night Shift (6PM-6AM)</option>
+                    </select>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CAR ID</th>
+                                <th>VESSEL</th>
+                                <th>AREA</th>
+                                <th>UNIT</th>
+                                <th>WORKER</th>
+                                <th>TIME</th>
+                                <th>HOURS</th>
+                                <th>STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingCarsTableBody">
+                            <tr>
+                                <td colspan="8" style="text-align: center; padding: 40px;">No vehicles in holding area</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Parked Vehicles Table -->
+        <div class="card" style="margin-bottom: 32px;">
+            <div class="card-header" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                <h2 class="card-title" style="color: white;">🚗 Parked Vehicles</h2>
+                <div class="card-actions">
+                    <button onclick="exportExcel()" class="btn-download-excel" style="background: white; color: #8b5cf6;">
+                        <span style="font-size: 20px;">📥</span>
+                        <span>Download Excel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="filter-bar">
+                    <input type="date" id="dateFilter" class="filter-select">
+                    <select id="shiftFilter" class="filter-select" onchange="loadCars()">
+                        <option value="">All Shifts</option>
+                        <option value="1">Day Shift (6AM-6PM)</option>
+                        <option value="2">Night Shift (6PM-6AM)</option>
+                    </select>
+                    <select id="statusFilter" class="filter-select" onchange="loadCars()">
+                        <option value="">All Status</option>
+                        <option value="green">🟢 Normal</option>
+                        <option value="amber">🟡 Warning</option>
+                        <option value="red">🔴 Overdue</option>
+                    </select>
+                </div>
+                
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CAR ID</th>
+                                <th>FIRST SCAN</th>
+                                <th>LAST SCAN</th>
+                                <th>TIME DIFF</th>
+                                <th>SCANS</th>
+                                <th>HOURS</th>
+                                <th>STATUS</th>
+                                <th>WORKER</th>
+                            </tr>
+                        </thead>
+                        <tbody id="parkedCarsTableBody">
+                            <tr>
+                                <td colspan="8" style="text-align: center; padding: 40px;">No parked vehicles</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     `;
     
-    // Insert at the very beginning
     mainContent.insertAdjacentHTML('afterbegin', scannerHTML);
+    
+    loadHoldingAreas();
+    
+    document.querySelectorAll('input[name="carLocation"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const holdingFields = document.getElementById('holdingAreaFields');
+            if (e.target.value === 'holding') {
+                holdingFields.style.display = 'block';
+            } else {
+                holdingFields.style.display = 'none';
+            }
+        });
+    });
     
     document.getElementById('manualCarId').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
@@ -831,16 +1177,157 @@ function showScannerSection() {
         }
     });
     
-    // Add hover effect to scan button
-    const scanBtn = document.querySelector('button[onclick="scanManually()"]');
-    scanBtn.addEventListener('mouseenter', () => {
-        scanBtn.style.transform = 'scale(1.05)';
-        scanBtn.style.boxShadow = '0 6px 16px rgba(0,0,0,0.3)';
-    });
-    scanBtn.addEventListener('mouseleave', () => {
-        scanBtn.style.transform = 'scale(1)';
-        scanBtn.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
-    });
+    document.getElementById('holdingDateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('holdingDateFilter').addEventListener('change', loadAdminHoldingCars);
+    document.getElementById('holdingShiftFilter').addEventListener('change', loadAdminHoldingCars);
+    
+    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+    document.getElementById('dateFilter').addEventListener('change', loadCars);
+    document.getElementById('shiftFilter').addEventListener('change', loadCars);
+    document.getElementById('statusFilter').addEventListener('change', loadCars);
+    
+    loadHoldingCars();
+    loadCars();
+}
+
+async function loadHoldingAreas() {
+    try {
+        const areas = await apiCall('/holding-areas');
+        const select = document.getElementById('holdingArea');
+        if (select && areas) {
+            select.innerHTML = '<option value="">Select Area</option>' + 
+                areas.map(a => `<option value="${a.holding_area_id}">${a.area_name}</option>`).join('');
+        }
+    } catch (error) {
+        console.error('Failed to load holding areas:', error);
+    }
+}
+
+function endSession() {
+    if (confirm('Are you sure you want to END YOUR SESSION?\n\nThis will log you out.')) {
+        clearToken();
+        localStorage.removeItem('user');
+        alert('✅ Session ended successfully!\n\nThank you for your work today!');
+        window.location.href = '/';
+    }
+}
+
+async function loadHoldingCars() {
+    try {
+        const date = document.getElementById('holdingDateFilter')?.value || new Date().toISOString().split('T')[0];
+        const shift = document.getElementById('holdingShiftFilter')?.value;
+        
+        const params = new URLSearchParams();
+        params.append('date', date);
+        params.append('holding_only', 'true');
+        if (shift) params.append('shift', shift);
+        
+        const cars = await apiCall(`/cars?${params}`);
+        displayHoldingCars(cars);
+    } catch (error) {
+        console.error('Failed to load holding cars:', error);
+    }
+}
+
+async function loadParkedCars() {
+    try {
+        const shift = document.getElementById('shiftFilter')?.value || '';
+        const status = document.getElementById('statusFilter')?.value || '';
+        const date = document.getElementById('dateFilter')?.value || new Date().toISOString().split('T')[0];
+        
+        const params = new URLSearchParams();
+        if (shift) params.append('shift', shift);
+        if (status) params.append('status', status);
+        params.append('date', date);
+        
+        const cars = await apiCall(`/cars?${params}`);
+        displayParkedCars(cars);
+    } catch (error) {
+        console.error('Failed to load parked cars:', error);
+    }
+}
+
+function displayHoldingCars(cars) {
+    const tbody = document.getElementById('holdingCarsTableBody');
+    if (!tbody) return;
+    
+    const holdingCars = cars.filter(c => c.is_in_holding);
+    
+    if (holdingCars.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #6b7280;">No vehicles in holding area</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = holdingCars.map(car => {
+        // Calculate hours from LAST SCAN TIME to NOW
+        const lastScanTime = new Date(car.last_scan_time);
+        const now = new Date();
+        const hoursFromLastScan = (now - lastScanTime) / (1000 * 60 * 60);
+        
+        // Calculate status based on hours from last scan to now
+        const calculatedStatus = calculateStatusFromHours(hoursFromLastScan);
+        const statusDisplay = getStatusDisplay(calculatedStatus);
+        const vesselDisplay = car.vessel_name ? `${car.vessel_name} (${car.vessel_type})` : '-';
+        
+        const workerDisplay = car.last_worker_id 
+            ? `<a href="#" onclick="showWorkerProfile(${car.last_worker_id}); return false;" style="color: #6366f1; text-decoration: none; font-weight: 600;">${car.last_worker || 'N/A'}</a>`
+            : (car.last_worker || 'N/A');
+        
+        return `
+            <tr>
+                <td><strong>${car.car_identifier}</strong></td>
+                <td style="font-size: 12px;">${vesselDisplay}</td>
+                <td style="font-size: 12px;">${car.holding_area_name || '-'}</td>
+                <td style="font-size: 12px;">${car.stack_number || '-'}</td>
+                <td>${workerDisplay}</td>
+                <td>${formatDateTime(car.last_scan_time)}</td>
+                <td>${hoursFromLastScan.toFixed(1)}h</td>
+                <td>${statusDisplay}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function displayParkedCars(cars) {
+    const tbody = document.getElementById('parkedCarsTableBody');
+    if (!tbody) return;
+    
+    const parkedCars = cars.filter(c => !c.is_in_holding);
+    
+    if (parkedCars.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #6b7280;">No parked vehicles</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = parkedCars.map(car => {
+        const timeDiff = calculateTimeDifference(car.first_scan_time, car.last_scan_time);
+        
+        // Calculate hours from LAST SCAN TIME to NOW
+        const lastScanTime = new Date(car.last_scan_time);
+        const now = new Date();
+        const hoursFromLastScan = (now - lastScanTime) / (1000 * 60 * 60);
+        
+        // Calculate status based on hours from last scan to now
+        const calculatedStatus = calculateStatusFromHours(hoursFromLastScan);
+        const statusDisplay = getStatusDisplay(calculatedStatus);
+        
+        const workerDisplay = car.last_worker_id 
+            ? `<a href="#" onclick="showWorkerProfile(${car.last_worker_id}); return false;" style="color: #6366f1; text-decoration: none; font-weight: 600;">${car.last_worker || 'N/A'}</a>`
+            : (car.last_worker || 'N/A');
+        
+        return `
+            <tr>
+                <td><strong>${car.car_identifier}</strong></td>
+                <td>${formatDateTime(car.first_scan_time)}</td>
+                <td>${formatDateTime(car.last_scan_time)}</td>
+                <td><span style="color: #64748b; font-weight: 600;">${timeDiff}</span></td>
+                <td><strong>${car.scan_count}x</strong></td>
+                <td>${hoursFromLastScan.toFixed(1)}h</td>
+                <td>${statusDisplay}</td>
+                <td>${workerDisplay}</td>
+            </tr>
+        `;
+    }).join('');
 }
 
 async function scanManually() {
@@ -848,18 +1335,46 @@ async function scanManually() {
     const carId = input.value.trim().toUpperCase();
     const resultDiv = document.getElementById('scanResult');
     
+    const isHolding = document.getElementById('locationHolding').checked;
+    
+    const vesselName = isHolding ? document.getElementById('vesselName')?.value.trim() : '';
+    const vesselType = isHolding ? document.getElementById('vesselType')?.value : 'ship';
+    const holdingAreaId = isHolding ? document.getElementById('holdingArea')?.value : '';
+    const stackNumber = isHolding ? document.getElementById('stackNumber')?.value.trim() : '';
+    
     if (!carId) {
         alert('Please enter a car ID');
         return;
     }
     
     try {
+        let vesselId = null;
+        
+        if (isHolding && vesselName) {
+            const vesselData = await apiCall('/vessels', {
+                method: 'POST',
+                body: JSON.stringify({
+                    vessel_name: vesselName,
+                    vessel_type: vesselType,
+                    arrival_date: new Date().toISOString().split('T')[0]
+                })
+            });
+            vesselId = vesselData.vessel_id;
+        }
+        
+        const scanData = {
+            car_identifier: carId,
+            vessel_id: vesselId,
+            holding_area_id: holdingAreaId || null,
+            stack_number: stackNumber,
+            is_in_holding: isHolding
+        };
+        
         const data = await apiCall('/scan', {
             method: 'POST',
-            body: JSON.stringify({ car_identifier: carId })
+            body: JSON.stringify(scanData)
         });
         
-        // Build result message
         let resultHTML = `
             <div style="padding: 16px; border-radius: 8px;">
                 <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">
@@ -867,11 +1382,11 @@ async function scanManually() {
                 </div>
                 <div style="font-size: 14px; margin-bottom: 8px;">
                     Car: <strong>${data.car.car_identifier}</strong> | 
+                    Location: <strong>${isHolding ? '📦 Holding' : '🅿️ Parked'}</strong> | 
                     Scans: <strong>${data.car.scan_count}x</strong> | 
-                    Status: <strong>${data.car.status.toUpperCase()}</strong>
+                    Status: <strong>${getStatusEmoji(data.car.status)}</strong>
                 </div>`;
         
-        // Show previous scans by other workers
         if (data.previous_scans && data.previous_scans.length > 0) {
             resultHTML += `
                 <div style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.2); border-radius: 8px; border-left: 4px solid #fbbf24;">
@@ -899,19 +1414,55 @@ async function scanManually() {
         resultDiv.innerHTML = resultHTML;
         resultDiv.style.display = 'block';
         input.value = '';
+        
+        if (document.getElementById('vesselName')) document.getElementById('vesselName').value = '';
+        if (document.getElementById('stackNumber')) document.getElementById('stackNumber').value = '';
+        if (document.getElementById('holdingArea')) document.getElementById('holdingArea').value = '';
+        
         input.focus();
         
         loadDashboardData();
-        loadCars();
+        loadHoldingCars();
+        loadParkedCars();
         
         setTimeout(() => {
             resultDiv.style.display = 'none';
-        }, 5000); // Show for 5 seconds (was 3)
+        }, 5000);
     } catch (error) {
-        alert('Scan failed: ' + error.message);
+        // Check if it's a shift violation error
+        if (error.message && error.message.includes('shift')) {
+            // Extract shift info from error message
+            const shiftMatch = error.message.match(/shift.*?(\d+):00/i);
+            const shiftStart = shiftMatch ? shiftMatch[1] : 'your';
+            
+            const resultDiv = document.getElementById('scanResult');
+            resultDiv.innerHTML = `
+                <div style="padding: 16px; border-radius: 8px; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); border-left: 4px solid #dc2626;">
+                    <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px; color: #7f1d1d;">
+                        ⛔ ACCESS DENIED
+                    </div>
+                    <div style="font-size: 14px; margin-bottom: 12px; color: #b91c1c;">
+                        ${error.message}
+                    </div>
+                    <div style="font-size: 13px; color: #991b1b; background: rgba(255,255,255,0.3); padding: 10px; border-radius: 6px;">
+                        Your shift starts at <strong>${shiftStart}:00</strong>. Please wait until your shift begins.
+                    </div>
+                </div>
+            `;
+            resultDiv.style.display = 'block';
+            input.value = '';
+            input.focus();
+            
+            setTimeout(() => {
+                resultDiv.style.display = 'none';
+            }, 5000);
+        } else {
+            alert('Scan failed: ' + error.message);
+        }
     }
 }
 
+// FIXED: exportExcel with auth token
 async function exportExcel() {
     const shift = document.getElementById('shiftFilter')?.value || '';
     const date = document.getElementById('dateFilter')?.value || new Date().toISOString().split('T')[0];
@@ -933,10 +1484,7 @@ async function exportExcel() {
             throw new Error('Export failed');
         }
         
-        // Get the blob
         const blob = await response.blob();
-        
-        // Create download link
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -953,19 +1501,13 @@ async function exportExcel() {
     }
 }
 
-// User Management
+// User Management Functions
 async function showUserManagement() {
-    console.log('🚀 showUserManagement() called!');
-    console.log('🚀 userManagementSection exists:', !!document.getElementById('userManagementSection'));
-    
-    // IMPORTANT: Remove any existing modal first to prevent duplicates
     const existingModal = document.getElementById('userModal');
     if (existingModal) {
-        console.log('🗑️ Removing old modal...');
         existingModal.remove();
     }
     
-    // Only create the modal HTML, not another user table
     const userMgmtHTML = `
         <div id="userModal" class="modal">
             <div class="modal-content">
@@ -994,11 +1536,8 @@ async function showUserManagement() {
                         <label>Assigned Shift <span style="color: #ef4444;">*</span></label>
                         <select id="userShift" class="form-input">
                             <option value="">Select Shift (Optional for Supervisors/Admins)</option>
-                            <option value="1">Shift 1 (6AM-10AM)</option>
-                            <option value="2">Shift 2 (10AM-2PM)</option>
-                            <option value="3">Shift 3 (2PM-6PM)</option>
-                            <option value="4">Shift 4 (6PM-10PM)</option>
-                            <option value="5">Shift 5 (10PM-2AM)</option>
+                            <option value="1">Day Shift (6AM-6PM)</option>
+                            <option value="2">Night Shift (6PM-6AM)</option>
                         </select>
                     </div>
                     <div class="form-group" id="supervisorGroup">
@@ -1019,12 +1558,6 @@ async function showUserManagement() {
     document.getElementById('userManagementSection').insertAdjacentHTML('beforeend', userMgmtHTML);
     loadSupervisors();
     
-    console.log('📝 Modal HTML inserted');
-    console.log('📝 userRole element:', document.getElementById('userRole'));
-    console.log('📝 shiftGroup element:', document.getElementById('shiftGroup'));
-    console.log('📝 supervisorGroup element:', document.getElementById('supervisorGroup'));
-    
-    // Add form submit event listener
     document.getElementById('userForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         await saveUser();
@@ -1032,17 +1565,10 @@ async function showUserManagement() {
     
     const roleSelect = document.getElementById('userRole');
     if (roleSelect) {
-        console.log('✅ Role select found! Adding event listener...');
         roleSelect.addEventListener('change', (e) => {
             const role = e.target.value;
             const isWorker = role === 'worker';
             
-            console.log('🔧 Role changed to:', role);
-            console.log('🔧 Is worker?', isWorker);
-            console.log('🔧 Shift field:', document.getElementById('shiftGroup'));
-            console.log('🔧 Supervisor field:', document.getElementById('supervisorGroup'));
-            
-            // Show/hide shift selection for workers
             const shiftGroup = document.getElementById('shiftGroup');
             const supervisorGroup = document.getElementById('supervisorGroup');
             
@@ -1050,65 +1576,15 @@ async function showUserManagement() {
                 shiftGroup.style.display = isWorker ? 'block' : 'none';
                 supervisorGroup.style.display = isWorker ? 'block' : 'none';
                 
-                // Make fields required/optional based on role
                 document.getElementById('userShift').required = isWorker;
                 document.getElementById('userSupervisor').required = isWorker;
-                
-                console.log('✅ Fields updated! Shift display:', shiftGroup.style.display);
-            } else {
-                console.error('❌ Shift or Supervisor fields not found!');
             }
             
-            // Load appropriate supervisors
             if (isWorker) {
                 loadSupervisors();
             }
         });
-        console.log('✅ Event listener attached successfully!');
-    } else {
-        console.error('❌ Role select element not found!');
     }
-}
-
-async function loadUsers() {
-    try {
-        const users = await apiCall('/users');
-        displayUsers(users);
-    } catch (error) {
-        console.error('Failed to load users:', error);
-    }
-}
-
-function displayUsers(users) {
-    const tbody = document.getElementById('usersTableBody');
-    
-    tbody.innerHTML = users.map(user => `
-        <tr>
-            <td>
-                <a href="#" onclick="showUserProfile(${user.user_id}, '${user.role}'); return false;" 
-                   style="color: #6366f1; text-decoration: none; font-weight: 600;">
-                    ${user.username}
-                </a>
-            </td>
-            <td>
-                <a href="#" onclick="showUserProfile(${user.user_id}, '${user.role}'); return false;" 
-                   style="color: #6366f1; text-decoration: none; font-weight: 600;">
-                    ${user.full_name}
-                </a>
-            </td>
-            <td><span class="badge badge-${user.role === 'admin' ? 'danger' : 'success'}">${user.role}</span></td>
-            <td>${user.assigned_shift ? `Shift ${user.assigned_shift}` : '-'}</td>
-            <td>${user.supervisor_name || '-'}</td>
-            <td><span class="badge ${user.is_active ? 'badge-success' : 'badge-danger'}">${user.is_active ? 'Active' : 'Inactive'}</span></td>
-            <td>
-                <button onclick="toggleUserStatus(${user.user_id}, ${user.is_active})" 
-                        class="btn btn-sm ${user.is_active ? 'btn-secondary' : 'btn-success'}" 
-                        style="padding: 4px 12px;">
-                    ${user.is_active ? 'Deactivate' : 'Activate'}
-                </button>
-            </td>
-        </tr>
-    `).join('');
 }
 
 async function loadSupervisors() {
@@ -1128,61 +1604,9 @@ function showAddUserModal() {
     document.getElementById('modalTitle').textContent = 'Add User';
     document.getElementById('userForm').reset();
     
-    // FORCE CHECK: Make sure shift and supervisor fields exist
     let shiftGroup = document.getElementById('shiftGroup');
     let supervisorGroup = document.getElementById('supervisorGroup');
     
-    console.log('🔍 Checking fields...');
-    console.log('Shift group exists?', !!shiftGroup);
-    console.log('Supervisor group exists?', !!supervisorGroup);
-    
-    // If fields don't exist, CREATE THEM NOW!
-    if (!shiftGroup || !supervisorGroup) {
-        console.log('⚠️ Fields missing! Creating them now...');
-        
-        const roleGroup = document.getElementById('userRole').closest('.form-group');
-        
-        if (!shiftGroup) {
-            const shiftHTML = `
-                <div class="form-group" id="shiftGroup">
-                    <label>Assigned Shift <span style="color: #ef4444;">*</span></label>
-                    <select id="userShift" class="form-input">
-                        <option value="">Select Shift</option>
-                        <option value="1">Shift 1 (6AM-10AM)</option>
-                        <option value="2">Shift 2 (10AM-2PM)</option>
-                        <option value="3">Shift 3 (2PM-6PM)</option>
-                        <option value="4">Shift 4 (6PM-10PM)</option>
-                        <option value="5">Shift 5 (10PM-2AM)</option>
-                    </select>
-                </div>
-            `;
-            roleGroup.insertAdjacentHTML('afterend', shiftHTML);
-            console.log('✅ Shift field created!');
-        }
-        
-        if (!supervisorGroup) {
-            const supervisorHTML = `
-                <div class="form-group" id="supervisorGroup">
-                    <label>Supervisor <span style="color: #ef4444;">*</span></label>
-                    <select id="userSupervisor" class="form-input">
-                        <option value="">Select Supervisor</option>
-                    </select>
-                </div>
-            `;
-            const shiftGroupNow = document.getElementById('shiftGroup');
-            if (shiftGroupNow) {
-                shiftGroupNow.insertAdjacentHTML('afterend', supervisorHTML);
-            } else {
-                roleGroup.insertAdjacentHTML('afterend', supervisorHTML);
-            }
-            console.log('✅ Supervisor field created!');
-            
-            // Load supervisors
-            loadSupervisors();
-        }
-    }
-    
-    // Hide shift and supervisor fields initially (until worker is selected)
     if (shiftGroup) shiftGroup.style.display = 'block';
     if (supervisorGroup) supervisorGroup.style.display = 'block';
     
@@ -1194,53 +1618,30 @@ function closeUserModal() {
 }
 
 async function saveUser() {
-    // Get form element
     const form = document.getElementById('userForm');
     
-    // Get values directly from form
     const username = form.querySelector('#userUsername').value.trim();
     const password = form.querySelector('#userPassword').value;
     const role = form.querySelector('#userRole').value;
     const shift = form.querySelector('#userShift').value;
     const supervisor = form.querySelector('#userSupervisor').value;
     
-    console.log('Raw form values:', {
-        username: username,
-        password: password ? '***' : 'empty',
-        role: role,
-        shift: shift,
-        supervisor: supervisor
-    });
-    
-    // Validation
-    if (!username) {
-        alert('Username is required');
+    if (!username || !password || !role) {
+        alert('Username, password and role are required');
         return;
     }
     
-    if (!password) {
-        alert('Password is required');
-        return;
-    }
-    
-    if (!role) {
-        alert('Role is required');
-        return;
-    }
-    
-    // REQUIRED: Workers must have shift and supervisor
     if (role === 'worker') {
         if (!shift) {
-            alert('⚠️ Shift is required for Workers!\nPlease select a shift.');
+            alert('⚠️ Shift is required for Workers!');
             return;
         }
         if (!supervisor) {
-            alert('⚠️ Supervisor is required for Workers!\nPlease select a supervisor.');
+            alert('⚠️ Supervisor is required for Workers!');
             return;
         }
     }
     
-    // Build userData object - use username as full_name
     const userData = {
         username: username,
         full_name: username,
@@ -1250,21 +1651,14 @@ async function saveUser() {
         supervisor_id: supervisor || null
     };
     
-    console.log('Prepared user data:', JSON.stringify({...userData, password: '***'}, null, 2));
-    
     try {
-        console.log('Calling API with:', userData);
-        const response = await apiCall('/users', {
+        await apiCall('/users', {
             method: 'POST',
             body: JSON.stringify(userData)
         });
         
-        console.log('Success! Response:', response);
         closeUserModal();
-        
-        // Reload the unified user table
         await loadAllUsersUnified();
-        
         alert('✅ User created successfully!\nUsername: ' + username);
     } catch (error) {
         console.error('Error creating user:', error);
@@ -1272,110 +1666,16 @@ async function saveUser() {
     }
 }
 
-
-// Set today's date as default
-if (document.getElementById('dateFilter')) {
-    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
-}
-
-// Worker Profile Modal
 async function showWorkerProfile(workerId) {
-    try {
-        const data = await apiCall(`/workers/${workerId}/profile`);
-        
-        const worker = data.worker;
-        const stats = data.stats;
-        const recentActivity = data.recent_activity;
-        
-        // Create profile modal HTML
-        const profileHTML = `
-            <div class="modal active" id="workerProfileModal" style="z-index: 2000;">
-                <div class="modal-content" style="max-width: 600px;">
-                    <div class="modal-header" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; padding: 24px;">
-                        <div style="display: flex; align-items: center; gap: 20px;">
-                            <img src="${worker.profile_image || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(worker.full_name) + '&size=200&background=6366f1&color=fff&bold=true'}" 
-                                 alt="${worker.full_name}" 
-                                 style="width: 80px; height: 80px; border-radius: 50%; border: 4px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
-                            <div style="flex: 1;">
-                                <h2 style="margin: 0 0 8px 0; font-size: 24px;">${worker.full_name}</h2>
-                                <p style="margin: 0; opacity: 0.9; font-size: 14px;">
-                                    ${worker.role.charAt(0).toUpperCase() + worker.role.slice(1)} - Shift ${worker.assigned_shift}
-                                </p>
-                            </div>
-                            <button onclick="closeWorkerProfile()" style="background: rgba(255,255,255,0.2); border: none; color: white; font-size: 28px; cursor: pointer; padding: 4px 12px; border-radius: 8px; line-height: 1;">×</button>
-                        </div>
-                    </div>
-                    
-                    <div style="padding: 24px;">
-                        <!-- Statistics -->
-                        <div style="margin-bottom: 24px;">
-                            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">📊 Performance Statistics</h3>
-                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
-                                <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
-                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.today_scans}</p>
-                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Today</p>
-                                </div>
-                                <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
-                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.week_scans}</p>
-                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">This Week</p>
-                                </div>
-                                <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
-                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.total_scans}</p>
-                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Total</p>
-                                </div>
-                                <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 16px; border-radius: 12px; text-align: center;">
-                                    <p style="margin: 0 0 4px 0; font-size: 28px; font-weight: bold;">${stats.unique_cars}</p>
-                                    <p style="margin: 0; font-size: 11px; opacity: 0.9;">Cars</p>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Recent Activity -->
-                        <div>
-                            <h3 style="font-size: 16px; margin-bottom: 12px; color: #1e293b;">🔍 Recent Activity</h3>
-                            <div style="max-height: 180px; overflow-y: auto; background: #f8fafc; border-radius: 12px; padding: 12px;">
-                                ${recentActivity.length > 0 ? recentActivity.map(scan => `
-                                    <div style="display: flex; justify-content: space-between; padding: 10px; background: white; border-radius: 8px; margin-bottom: 6px;">
-                                        <span style="font-weight: 600; color: #0f172a;">🚗 ${scan.car_identifier}</span>
-                                        <span style="color: #64748b; font-size: 13px;">${new Date(scan.scan_time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-                                    </div>
-                                `).join('') : '<p style="text-align: center; color: #94a3b8; padding: 20px;">No recent activity</p>'}
-                            </div>
-                        </div>
-                        
-                        <div style="margin-top: 20px; text-align: center;">
-                            <button onclick="closeWorkerProfile()" class="btn btn-secondary" style="padding: 10px 32px;">Close</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        // Insert modal
-        document.body.insertAdjacentHTML('beforeend', profileHTML);
-        
-    } catch (error) {
-        console.error('Error loading worker profile:', error);
-        alert('Failed to load worker profile: ' + error.message);
-    }
+    showUserProfile(workerId, 'worker');
 }
 
-function closeWorkerProfile() {
-    const modal = document.getElementById('workerProfileModal');
-    if (modal) {
-        modal.remove();
-    }
-}
-
-// Universal User Profile (Workers, Supervisors, Admins)
 async function showUserProfile(userId, userRole) {
     try {
-        // Use different endpoint based on role
         let data;
         if (userRole === 'worker') {
             data = await apiCall(`/workers/${userId}/profile`);
         } else {
-            // For supervisors and admins, get basic info
             const users = await apiCall('/users');
             const user = users.find(u => u.user_id === userId);
             
@@ -1384,7 +1684,6 @@ async function showUserProfile(userId, userRole) {
                 return;
             }
             
-            // Build data structure similar to worker profile
             data = {
                 worker: {
                     user_id: user.user_id,
@@ -1404,9 +1703,7 @@ async function showUserProfile(userId, userRole) {
                 recent_activity: []
             };
             
-            // For supervisors, get their team stats
             if (userRole === 'supervisor') {
-                // Get workers under this supervisor
                 const workers = users.filter(u => u.supervisor_id === userId && u.role === 'worker');
                 data.team_size = workers.length;
             }
@@ -1416,11 +1713,9 @@ async function showUserProfile(userId, userRole) {
         const stats = data.stats;
         const recentActivity = data.recent_activity;
         
-        // Role-specific emoji and color
         const roleEmoji = worker.role === 'admin' ? '👑' : worker.role === 'supervisor' ? '👨‍💼' : '👷';
         const roleColor = worker.role === 'admin' ? '#ef4444' : worker.role === 'supervisor' ? '#8b5cf6' : '#10b981';
         
-        // Create profile modal HTML
         const profileHTML = `
             <div class="modal active" id="workerProfileModal" style="z-index: 2000;">
                 <div class="modal-content" style="max-width: 600px;">
@@ -1441,7 +1736,6 @@ async function showUserProfile(userId, userRole) {
                     
                     <div style="padding: 24px;">
                         ${worker.role === 'worker' ? `
-                        <!-- Statistics for Workers -->
                         <div style="margin-bottom: 24px;">
                             <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">📊 Performance Statistics</h3>
                             <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
@@ -1464,7 +1758,6 @@ async function showUserProfile(userId, userRole) {
                             </div>
                         </div>
                         
-                        <!-- Recent Activity -->
                         <div>
                             <h3 style="font-size: 16px; margin-bottom: 12px; color: #1e293b;">🔍 Recent Activity</h3>
                             <div style="max-height: 180px; overflow-y: auto; background: #f8fafc; border-radius: 12px; padding: 12px;">
@@ -1477,7 +1770,6 @@ async function showUserProfile(userId, userRole) {
                             </div>
                         </div>
                         ` : worker.role === 'supervisor' ? `
-                        <!-- Info for Supervisors -->
                         <div style="margin-bottom: 24px;">
                             <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">👥 Supervisor Information</h3>
                             <div style="background: #f8fafc; padding: 20px; border-radius: 12px;">
@@ -1498,7 +1790,6 @@ async function showUserProfile(userId, userRole) {
                             </div>
                         </div>
                         ` : `
-                        <!-- Info for Admins -->
                         <div style="margin-bottom: 24px;">
                             <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b;">👑 Administrator Information</h3>
                             <div style="background: #f8fafc; padding: 20px; border-radius: 12px;">
@@ -1522,7 +1813,6 @@ async function showUserProfile(userId, userRole) {
             </div>
         `;
         
-        // Insert modal
         document.body.insertAdjacentHTML('beforeend', profileHTML);
         
     } catch (error) {
@@ -1531,7 +1821,13 @@ async function showUserProfile(userId, userRole) {
     }
 }
 
-// Supervisor Worker Management
+function closeWorkerProfile() {
+    const modal = document.getElementById('workerProfileModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
 async function loadSupervisorWorkers() {
     try {
         const users = await apiCall('/users');
@@ -1554,13 +1850,13 @@ function displaySupervisorWorkers(workers) {
     
     container.innerHTML = `
         <div style="overflow-x: auto;">
-            <table style="width: 100%; font-size: 13px;">
-                <thead>
-                    <tr style="background: #f8fafc;">
-                        <th style="padding: 10px; text-align: left;">Worker Name</th>
-                        <th style="padding: 10px; text-align: left;">Shift</th>
-                        <th style="padding: 10px; text-align: left;">Status</th>
-                        <th style="padding: 10px; text-align: left;">Actions</th>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+                    <tr>
+                        <th style="padding: 12px; text-align: left; color: white; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Worker Name</th>
+                        <th style="padding: 12px; text-align: left; color: white; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Shift</th>
+                        <th style="padding: 12px; text-align: left; color: white; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Status</th>
+                        <th style="padding: 12px; text-align: left; color: white; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1592,7 +1888,6 @@ function displaySupervisorWorkers(workers) {
     `;
 }
 
-// Download Excel for Specific Worker
 async function downloadWorkerExcel(workerId, workerName) {
     const dateInput = document.getElementById('dateFilter');
     const date = dateInput ? dateInput.value : new Date().toISOString().split('T')[0];
@@ -1628,5 +1923,104 @@ async function downloadWorkerExcel(workerId, workerName) {
     } catch (error) {
         console.error('Download failed:', error);
         alert('Failed to download Excel: ' + error.message);
+    }
+}
+
+if (document.getElementById('dateFilter')) {
+    document.getElementById('dateFilter').value = new Date().toISOString().split('T')[0];
+} 
+
+function loadAdminHoldingCars() {
+    const date = document.getElementById('holdingDateFilter')?.value || new Date().toISOString().split('T')[0];
+    const shift = document.getElementById('holdingShiftFilter')?.value;
+    
+    const params = new URLSearchParams({ date, holding_only: 'true' });
+    if (shift) params.append('shift', shift);
+    
+    apiCall(`/cars?${params}`)
+        .then(cars => {
+            const holdingCars = cars.filter(c => c.is_in_holding);
+            displayAdminHoldingCars(holdingCars);
+        })
+        .catch(error => console.error('Error:', error));
+}
+
+function displayAdminHoldingCars(cars) {
+    const tbody = document.getElementById('holdingCarsTableBody');
+    if (!tbody) return;
+    
+    if (cars.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px;">No vehicles in holding area</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = cars.map(car => {
+        // Calculate hours from LAST SCAN TIME to NOW
+        const lastScanTime = new Date(car.last_scan_time);
+        const now = new Date();
+        const hoursFromLastScan = (now - lastScanTime) / (1000 * 60 * 60);
+        
+        // Calculate status based on hours from last scan to now
+        const calculatedStatus = calculateStatusFromHours(hoursFromLastScan);
+        const statusDisplay = getStatusDisplay(calculatedStatus);
+        const vessel = car.vessel_name ? `${car.vessel_name} (${car.vessel_type})` : '-';
+        
+        const workerDisplay = car.last_worker_id 
+            ? `<a href="#" onclick="showWorkerProfile(${car.last_worker_id}); return false;" style="color: #6366f1; text-decoration: none; font-weight: 600;">${car.last_worker || 'N/A'}</a>`
+            : (car.last_worker || 'N/A');
+        
+        return `
+            <tr>
+                <td><strong>${car.car_identifier}</strong></td>
+                <td>${vessel}</td>
+                <td>${car.holding_area_name || '-'}</td>
+                <td>${car.stack_number || '-'}</td>
+                <td>${workerDisplay}</td>
+                <td>${formatDateTime(car.last_scan_time)}</td>
+                <td>${hoursFromLastScan.toFixed(1)}h</td>
+                <td>${statusDisplay}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// FIXED: exportHoldingExcel with proper auth token
+function exportHoldingExcel() {
+    const date = document.getElementById('holdingDateFilter')?.value || new Date().toISOString().split('T')[0];
+    const shift = document.getElementById('holdingShiftFilter')?.value;
+    
+    const params = new URLSearchParams();
+    params.append('date', date);
+    if (shift) params.append('shift', shift);
+    
+    try {
+        const token = getToken();
+        fetch(`${API_URL}/export/holding?${params}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Export failed');
+            }
+            return response.blob();
+        })
+        .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `holding_area_${date}${shift ? '_shift' + shift : ''}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            console.log('Holding area Excel exported successfully');
+        });
+    } catch (error) {
+        console.error('Export error:', error);
+        alert('Failed to export: ' + error.message);
     }
 }

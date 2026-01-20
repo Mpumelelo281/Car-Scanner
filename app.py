@@ -1,10 +1,7 @@
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
-# Set timezone for South Africa
-SOUTH_AFRICA_TZ = ZoneInfo('Africa/Johannesburg')
+import pytz
 import psycopg
 from psycopg.rows import dict_row
 import bcrypt
@@ -12,7 +9,7 @@ import jwt
 from functools import wraps
 import os
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment
 import io
 
 app = Flask(__name__)
@@ -26,32 +23,34 @@ DB_CONFIG = {
     'password': 'postgres'
 }
 
+# South Africa Timezone
+SOUTH_AFRICA_TZ = pytz.timezone('Africa/Johannesburg')
+
+def get_current_time():
+    """Get current time in South Africa timezone"""
+    return datetime.now(SOUTH_AFRICA_TZ)
+
 def get_db():
     return psycopg.connect(**DB_CONFIG, row_factory=dict_row)
 
 SHIFTS = {
-    1: {'start': 6, 'end': 10, 'name': '6AM-10AM'},
-    2: {'start': 10, 'end': 14, 'name': '10AM-2PM'},
-    3: {'start': 14, 'end': 18, 'name': '2PM-6PM'},
-    4: {'start': 18, 'end': 22, 'name': '6PM-10PM'},
-    5: {'start': 22, 'end': 2, 'name': '10PM-2AM'}  # Overnight shift
+    1: {'start': 6, 'end': 18, 'name': '6AM-6PM (Day Shift)'},
+    2: {'start': 18, 'end': 6, 'name': '6PM-6AM (Night Shift)'}
 }
 
 def get_current_shift():
-    hour = datetime.now().hour
-    
-    # Handle overnight shift (22:00 - 02:00)
-    if hour >= 22 or hour < 2:
-        return 5
-    
-    # Handle regular shifts
-    for shift_num, times in SHIFTS.items():
-        start = times['start']
-        end = times['end']
-        if start <= hour < end:
-            return shift_num
-    
-    return 1  # Default to shift 1 if no match
+    """Get current shift based on South Africa time"""
+    hour = get_current_time().hour
+    return 1 if 6 <= hour < 18 else 2
+
+def get_status_color(hours_parked):
+    """Get status based on hours: green < 4h, amber 4-12h, red 12h+"""
+    if hours_parked < 4:
+        return {'emoji': '🟢', 'status': 'green', 'text': 'Normal'}
+    elif hours_parked < 12:
+        return {'emoji': '🟡', 'status': 'amber', 'text': 'Warning'}
+    else:
+        return {'emoji': '🔴', 'status': 'red', 'text': 'Overdue'}
 
 def token_required(f):
     @wraps(f)
@@ -63,7 +62,8 @@ def token_required(f):
             token = token.split(' ')[1] if ' ' in token else token
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
             current_user = data
-        except:
+        except Exception as e:
+            print(f"Token decode error: {e}")
             return jsonify({'error': 'Invalid token'}), 401
         return f(current_user, *args, **kwargs)
     return decorated
@@ -78,7 +78,15 @@ def role_required(roles):
         return decorated_function
     return decorator
 
-# HTML Routes
+# Routes that were causing 404 errors
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+@app.route('/.well-known/<path:path>')
+def well_known(path):
+    return '', 204
+
 @app.route('/')
 def index():
     return render_template('login.html')
@@ -87,12 +95,20 @@ def index():
 def dashboard():
     return render_template('dashboard.html')
 
-# AUTH
+@app.route('/health', methods=['GET'])
+def health():
+    try:
+        conn = get_db()
+        conn.close()
+        return jsonify({'status': 'healthy', 'db': 'connected'}), 200
+    except Exception as e:
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+
+# AUTH - FIXED
 @app.route('/api/login', methods=['POST'])
 def login():
     try:
         data = request.get_json()
-        
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
@@ -111,65 +127,132 @@ def login():
         if not user:
             return jsonify({'error': 'Invalid credentials'}), 401
         
-        # Check if user has a password set
         if not user['password_hash']:
-            return jsonify({'error': 'User account needs password setup. Please contact admin.'}), 401
+            return jsonify({'error': 'User account needs password setup'}), 401
         
-        # Verify password
-        try:
-            if bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
-                # Use username as full_name if full_name is NULL
-                display_name = user['full_name'] if user['full_name'] else user['username']
-                
-                token = jwt.encode({
+        password_hash_bytes = user['password_hash']
+        if isinstance(password_hash_bytes, str):
+            password_hash_bytes = password_hash_bytes.encode('utf-8')
+        
+        if bcrypt.checkpw(password.encode(), password_hash_bytes):
+            assigned_shift = user['assigned_shift'] or get_current_shift()
+            
+            token = jwt.encode({
+                'user_id': user['user_id'],
+                'username': user['username'],
+                'role': user['role'],
+                'full_name': user['full_name'] or user['username'],
+                'assigned_shift': assigned_shift,
+                'supervisor_id': user['supervisor_id']
+            }, app.config['SECRET_KEY'], algorithm='HS256')
+            
+            return jsonify({
+                'token': token,
+                'user': {
                     'user_id': user['user_id'],
                     'username': user['username'],
                     'role': user['role'],
-                    'full_name': display_name,
-                    'assigned_shift': user['assigned_shift'],
-                    'supervisor_id': user['supervisor_id']
-                }, app.config['SECRET_KEY'], algorithm='HS256')
-                
-                return jsonify({
-                    'token': token,
-                    'user': {
-                        'user_id': user['user_id'],
-                        'username': user['username'],
-                        'role': user['role'],
-                        'full_name': display_name,
-                        'assigned_shift': user['assigned_shift']
-                    }
-                }), 200
-        except Exception as e:
-            print(f"Password check error: {e}")
+                    'full_name': user['full_name'] or user['username'],
+                    'assigned_shift': assigned_shift
+                }
+            }), 200
+        else:
             return jsonify({'error': 'Invalid credentials'}), 401
-        
-        return jsonify({'error': 'Invalid credentials'}), 401
-        
+            
     except Exception as e:
         print(f"Login error: {e}")
         return jsonify({'error': 'Server error during login'}), 500
 
-# USER MANAGEMENT
+# HOLDING AREAS
+@app.route('/api/holding-areas', methods=['GET'])
+@token_required
+def get_holding_areas(current_user):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'holding_areas'
+            )
+        """)
+        if not cur.fetchone()['exists']:
+            conn.close()
+            return jsonify([
+                {'holding_area_id': 1, 'area_name': 'Holding Area A'},
+                {'holding_area_id': 2, 'area_name': 'Holding Area B'},
+                {'holding_area_id': 3, 'area_name': 'Holding Area C'}
+            ])
+        
+        cur.execute('SELECT * FROM holding_areas WHERE is_active = TRUE ORDER BY area_name')
+        areas = cur.fetchall()
+        conn.close()
+        return jsonify([dict(a) for a in areas])
+    except Exception as e:
+        print(f"Error loading holding areas: {e}")
+        return jsonify([])
+
+# VESSELS
+@app.route('/api/vessels', methods=['GET'])
+@token_required
+def get_vessels(current_user):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM vessels WHERE is_active = TRUE ORDER BY arrival_date DESC')
+        vessels = cur.fetchall()
+        conn.close()
+        return jsonify([dict(v) for v in vessels])
+    except:
+        return jsonify([])
+
+@app.route('/api/vessels', methods=['POST'])
+@token_required
+def create_vessel(current_user):
+    try:
+        data = request.json
+        vessel_name = data.get('vessel_name', '').strip()
+        vessel_type = data.get('vessel_type', 'ship')
+        arrival_date = data.get('arrival_date')
+        
+        if not vessel_name:
+            return jsonify({'error': 'Vessel name required'}), 400
+        
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO vessels (vessel_name, vessel_type, arrival_date)
+            VALUES (%s, %s, %s) RETURNING vessel_id
+        ''', (vessel_name, vessel_type, arrival_date))
+        vessel_id = cur.fetchone()['vessel_id']
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Vessel created', 'vessel_id': vessel_id}), 201
+    except Exception as e:
+        print(f"Error creating vessel: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# USERS
 @app.route('/api/users', methods=['GET'])
 @token_required
-@role_required(['admin', 'supervisor'])
 def get_users(current_user):
     conn = get_db()
     cur = conn.cursor()
     
     if current_user['role'] == 'supervisor':
         cur.execute('''
-            SELECT user_id, username, role, full_name, assigned_shift, is_active, created_date
-            FROM users WHERE supervisor_id = %s
+            SELECT u.*, s.full_name as supervisor_name
+            FROM users u
+            LEFT JOIN users s ON u.supervisor_id = s.user_id
+            WHERE u.supervisor_id = %s AND u.role = 'worker'
+            ORDER BY u.full_name
         ''', (current_user['user_id'],))
     else:
         cur.execute('''
-            SELECT u.user_id, u.username, u.role, u.full_name, u.assigned_shift, 
-                   u.supervisor_id, u.is_active, u.created_date, s.full_name as supervisor_name
+            SELECT u.*, s.full_name as supervisor_name
             FROM users u
             LEFT JOIN users s ON u.supervisor_id = s.user_id
-            WHERE u.role != 'admin'
+            ORDER BY u.role, u.full_name
         ''')
     
     users = cur.fetchall()
@@ -182,175 +265,45 @@ def get_users(current_user):
 def create_user(current_user):
     try:
         data = request.json
-        print(f"DEBUG: Received data: {data}")
-        
-        # Validate required fields
         username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
         full_name = data.get('full_name', '').strip()
         role = data.get('role', '').strip()
         
-        if not username or not full_name or not role:
-            return jsonify({'error': 'Username, full name, and role are required'}), 400
+        if not username or not password or not role:
+            return jsonify({'error': 'Missing required fields'}), 400
         
-        # Validate role
-        if role not in ['worker', 'supervisor', 'admin']:
-            return jsonify({'error': f'Invalid role: {role}'}), 400
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         
-        password_hash = bcrypt.hashpw('temp123'.encode(), bcrypt.gensalt()).decode()
+        assigned_shift = data.get('assigned_shift')
+        if assigned_shift in [None, '', 'null']:
+            assigned_shift = 1 if role == 'worker' else None
+        else:
+            assigned_shift = int(assigned_shift)
+        
+        supervisor_id = data.get('supervisor_id')
+        if supervisor_id in [None, '', 'null']:
+            supervisor_id = None
+        else:
+            supervisor_id = int(supervisor_id)
         
         conn = get_db()
         cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id
+        ''', (username, password_hash, role, full_name, assigned_shift, supervisor_id))
         
-        try:
-            # Handle assigned_shift - convert empty/null to None
-            assigned_shift = data.get('assigned_shift')
-            if assigned_shift in [None, '', 'null', 'None']:
-                assigned_shift = None
-            else:
-                try:
-                    assigned_shift = int(assigned_shift)
-                except (ValueError, TypeError):
-                    assigned_shift = None
-            
-            # Handle supervisor_id - convert empty/null to None
-            supervisor_id = data.get('supervisor_id')
-            if supervisor_id in [None, '', 'null', 'None']:
-                supervisor_id = None
-            else:
-                try:
-                    supervisor_id = int(supervisor_id)
-                except (ValueError, TypeError):
-                    supervisor_id = None
-            
-            print(f"DEBUG: Inserting user - username={username}, role={role}, shift={assigned_shift}, supervisor={supervisor_id}")
-            
-            cur.execute('''
-                INSERT INTO users (username, password_hash, role, full_name, assigned_shift, supervisor_id)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING user_id
-            ''', (username, password_hash, role, full_name, assigned_shift, supervisor_id))
-            
-            user_id = cur.fetchone()['user_id']
-            conn.commit()
-            print(f"DEBUG: User created successfully - ID: {user_id}")
-            cur.close()
-            conn.close()
-            return jsonify({'message': 'User created successfully', 'user_id': user_id}), 201
-            
-        except psycopg.errors.UniqueViolation:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            return jsonify({'error': 'Username already exists'}), 400
-        except Exception as e:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            print(f"DEBUG: Database error: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({'error': f'Database error: {str(e)}'}), 500
-            
-    except Exception as e:
-        print(f"DEBUG: Error in create_user: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': f'Server error: {str(e)}'}), 500
-
-@app.route('/api/workers/<int:worker_id>/profile', methods=['GET'])
-@token_required
-def get_worker_profile(current_user, worker_id):
-    """Get detailed worker profile with statistics"""
-    conn = get_db()
-    cur = conn.cursor()
-    
-    # Get worker details
-    cur.execute('''
-        SELECT user_id, username, full_name, role, assigned_shift, 
-               phone, email, profile_image, date_joined, bio, total_scans, last_scan_date,
-               is_active
-        FROM users 
-        WHERE user_id = %s AND role = 'worker'
-    ''', (worker_id,))
-    
-    worker = cur.fetchone()
-    
-    if not worker:
-        conn.close()
-        return jsonify({'error': 'Worker not found'}), 404
-    
-    # Get worker's scan statistics
-    today = datetime.now().date()
-    
-    # Today's scans
-    cur.execute('''
-        SELECT COUNT(*) as today_scans
-        FROM scans
-        WHERE worker_id = %s AND date = %s
-    ''', (worker_id, today))
-    today_stats = cur.fetchone()
-    
-    # This week's scans
-    cur.execute('''
-        SELECT COUNT(*) as week_scans
-        FROM scans
-        WHERE worker_id = %s AND date >= CURRENT_DATE - INTERVAL '7 days'
-    ''', (worker_id,))
-    week_stats = cur.fetchone()
-    
-    # Total unique cars scanned
-    cur.execute('''
-        SELECT COUNT(DISTINCT car_id) as unique_cars
-        FROM scans
-        WHERE worker_id = %s
-    ''', (worker_id,))
-    car_stats = cur.fetchone()
-    
-    # Recent activity (last 10 scans)
-    cur.execute('''
-        SELECT c.car_identifier, s.scan_time, s.shift_number
-        FROM scans s
-        JOIN cars c ON s.car_id = c.car_id
-        WHERE s.worker_id = %s
-        ORDER BY s.scan_time DESC
-        LIMIT 10
-    ''', (worker_id,))
-    recent_scans = cur.fetchall()
-    
-    conn.close()
-    
-    return jsonify({
-        'worker': dict(worker),
-        'stats': {
-            'today_scans': today_stats['today_scans'],
-            'week_scans': week_stats['week_scans'],
-            'total_scans': worker['total_scans'] or 0,
-            'unique_cars': car_stats['unique_cars']
-        },
-        'recent_activity': [dict(s) for s in recent_scans]
-    })
-
-@app.route('/api/users/<int:user_id>', methods=['PUT'])
-@token_required
-@role_required(['admin'])
-def update_user(current_user, user_id):
-    data = request.json
-    conn = get_db()
-    cur = conn.cursor()
-    
-    fields = []
-    values = []
-    for field in ['full_name', 'assigned_shift', 'supervisor_id', 'is_active', 'role']:
-        if field in data:
-            fields.append(f"{field} = %s")
-            values.append(data[field])
-    
-    if fields:
-        values.append(user_id)
-        cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE user_id = %s", values)
+        user_id = cur.fetchone()['user_id']
         conn.commit()
-    
-    conn.close()
-    return jsonify({'message': 'User updated'})
+        conn.close()
+        return jsonify({'message': 'User created', 'user_id': user_id}), 201
+        
+    except psycopg.errors.UniqueViolation:
+        return jsonify({'error': 'Username already exists'}), 400
+    except Exception as e:
+        print(f"Error creating user: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 @token_required
@@ -363,199 +316,307 @@ def delete_user(current_user, user_id):
     conn.close()
     return jsonify({'message': 'User deactivated'})
 
-# SCANNING
+# WORKER PROFILE
+@app.route('/api/workers/<int:worker_id>/profile', methods=['GET'])
+@token_required
+def get_worker_profile(current_user, worker_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        
+        cur.execute('SELECT * FROM users WHERE user_id = %s AND role = \'worker\'', (worker_id,))
+        worker = cur.fetchone()
+        
+        if not worker:
+            conn.close()
+            return jsonify({'error': 'Worker not found'}), 404
+        
+        today = get_current_time().date()
+        
+        cur.execute('SELECT COUNT(*) as today_scans FROM scans WHERE worker_id = %s AND date = %s', (worker_id, today))
+        today_stats = cur.fetchone()
+        
+        cur.execute('SELECT COUNT(*) as week_scans FROM scans WHERE worker_id = %s AND date >= CURRENT_DATE - INTERVAL \'7 days\'', (worker_id,))
+        week_stats = cur.fetchone()
+        
+        cur.execute('SELECT COUNT(DISTINCT car_id) as unique_cars FROM scans WHERE worker_id = %s', (worker_id,))
+        car_stats = cur.fetchone()
+        
+        cur.execute('''
+            SELECT c.car_identifier, s.scan_time, s.shift_number
+            FROM scans s
+            JOIN cars c ON s.car_id = c.car_id
+            WHERE s.worker_id = %s
+            ORDER BY s.scan_time DESC
+            LIMIT 10
+        ''', (worker_id,))
+        recent_scans = cur.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'worker': dict(worker),
+            'stats': {
+                'today_scans': today_stats['today_scans'],
+                'week_scans': week_stats['week_scans'],
+                'total_scans': worker.get('total_scans') or 0,
+                'unique_cars': car_stats['unique_cars']
+            },
+            'recent_activity': [dict(s) for s in recent_scans]
+        })
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# SCANNING - FIXED to use South Africa time
 @app.route('/api/scan', methods=['POST'])
 @token_required
 def scan_car(current_user):
-    data = request.json
-    car_identifier = data.get('car_identifier', '').strip().upper()
-    
-    if not car_identifier:
-        return jsonify({'error': 'Car identifier required'}), 400
-    
-    conn = get_db()
-    cur = conn.cursor()
-    # Get current time in South Africa timezone, then convert to naive for database
-    now = datetime.now(SOUTH_AFRICA_TZ).replace(tzinfo=None)
-    today = now.date()
-    shift_number = get_current_shift()
-    
-    cur.execute('SELECT * FROM cars WHERE car_identifier = %s AND is_active = TRUE', (car_identifier,))
-    car = cur.fetchone()
-    
-    if car:
-        car_id = car['car_id']
-        scan_count = car['scan_count'] + 1
-        hours_parked = (now - car['first_scan_time']).total_seconds() / 3600
+    try:
+        data = request.json
+        car_identifier = data.get('car_identifier', '').strip().upper()
         
-        if hours_parked >= 12:
-            status = 'overdue'
-        elif hours_parked >= 4:
-            status = 'warning'
+        vessel_id = data.get('vessel_id')
+        holding_area_id = data.get('holding_area_id')
+        stack_number = data.get('stack_number', '').strip()
+        is_in_holding = data.get('is_in_holding', False)
+        
+        if not car_identifier:
+            return jsonify({'error': 'Car identifier required'}), 400
+        
+        user_id = current_user.get('user_id')
+        
+        conn = get_db()
+        cur = conn.cursor()
+        
+        # Use South Africa time with timezone info (don't strip tzinfo)
+        now = get_current_time()
+        today = now.date()
+        
+        # Check if worker has assigned shift
+        user_role = current_user.get('role')
+        assigned_shift = current_user.get('assigned_shift')
+        current_hour = now.hour
+        
+        # Only enforce shift restriction for workers (not supervisors or admins)
+        if user_role == 'worker' and assigned_shift:
+            shift_info = SHIFTS[assigned_shift]
+            shift_start = shift_info['start']
+            shift_end = shift_info['end']
+            
+            # Check if current time is within worker's assigned shift
+            if assigned_shift == 1:  # Day shift 6AM-6PM
+                is_on_shift = shift_start <= current_hour < shift_end
+            else:  # Night shift 6PM-6AM (spans midnight)
+                is_on_shift = current_hour >= shift_start or current_hour < shift_end
+            
+            if not is_on_shift:
+                shift_name = shift_info['name']
+                return jsonify({
+                    'error': 'Outside working hours',
+                    'message': f'You cannot scan outside your shift. Your shift ({shift_name}) starts at {shift_start}:00',
+                    'assigned_shift': assigned_shift,
+                    'shift_info': shift_name,
+                    'current_hour': current_hour
+                }), 403
+        
+        shift_number = current_user.get('assigned_shift') or get_current_shift()
+        
+        # Check if car exists
+        cur.execute('SELECT * FROM cars WHERE car_identifier = %s AND is_active = TRUE', (car_identifier,))
+        car = cur.fetchone()
+        
+        if car:
+            car_id = car['car_id']
+            scan_count = car['scan_count'] + 1
+            hours_parked = (now - car['first_scan_time']).total_seconds() / 3600
+            status_info = get_status_color(hours_parked)
+            status = status_info['status']
+            
+            # Update with holding info if provided
+            if is_in_holding:
+                cur.execute('''
+                    UPDATE cars SET last_scan_time = %s, scan_count = %s, status = %s,
+                           vessel_id = %s, holding_area_id = %s, stack_number = %s, is_in_holding = %s
+                    WHERE car_id = %s
+                ''', (now, scan_count, status, vessel_id, holding_area_id, stack_number, is_in_holding, car_id))
+            else:
+                cur.execute('''
+                    UPDATE cars SET last_scan_time = %s, scan_count = %s, status = %s
+                    WHERE car_id = %s
+                ''', (now, scan_count, status, car_id))
         else:
-            status = 'active'
+            # Create new car
+            status = 'green'
+            cur.execute('''
+                INSERT INTO cars (car_identifier, first_scan_time, last_scan_time, scan_count, status, date,
+                                  vessel_id, holding_area_id, stack_number, is_in_holding)
+                VALUES (%s, %s, %s, 1, %s, %s, %s, %s, %s, %s) RETURNING car_id
+            ''', (car_identifier, now, now, status, today, vessel_id, holding_area_id, stack_number, is_in_holding))
+            car_id = cur.fetchone()['car_id']
         
+        # Insert scan record
         cur.execute('''
-            UPDATE cars SET last_scan_time = %s, scan_count = %s, status = %s
-            WHERE car_id = %s
-        ''', (now, scan_count, status, car_id))
-    else:
+            INSERT INTO scans (car_id, worker_id, scan_time, shift_number, date)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (car_id, user_id, now, shift_number, today))
+        
+        conn.commit()
+        
+        # Get updated car info
         cur.execute('''
-            INSERT INTO cars (car_identifier, first_scan_time, last_scan_time, scan_count, status, date)
-            VALUES (%s, %s, %s, 1, 'active', %s) RETURNING car_id
-        ''', (car_identifier, now, now, today))
-        car_id = cur.fetchone()['car_id']
-    
-    cur.execute('''
-        INSERT INTO scans (car_id, worker_id, scan_time, shift_number, date)
-        VALUES (%s, %s, %s, %s, %s)
-    ''', (car_id, current_user['user_id'], now, shift_number, today))
-    
-    conn.commit()
-    
-    # Get updated car info
-    cur.execute('''
-        SELECT c.*, u.full_name as last_worker
-        FROM cars c
-        LEFT JOIN scans s ON c.car_id = s.car_id AND s.scan_time = c.last_scan_time
-        LEFT JOIN users u ON s.worker_id = u.user_id
-        WHERE c.car_id = %s
-    ''', (car_id,))
-    updated_car = cur.fetchone()
-    
-    # Get previous scans history (last 3 scans by other workers)
-    cur.execute('''
-        SELECT s.scan_time, u.full_name as worker_name, s.shift_number, s.worker_id
-        FROM scans s
-        JOIN users u ON s.worker_id = u.user_id
-        WHERE s.car_id = %s AND s.worker_id != %s
-        ORDER BY s.scan_time DESC
-        LIMIT 3
-    ''', (car_id, current_user['user_id']))
-    previous_scans = cur.fetchall()
-    
-    conn.close()
-    
-    # Build scan history message
-    scan_history = []
-    if previous_scans:
+            SELECT c.*, u.full_name as last_worker,
+                   v.vessel_name, v.vessel_type,
+                   ha.area_name as holding_area_name
+            FROM cars c
+            LEFT JOIN scans s ON c.car_id = s.car_id AND s.scan_time = c.last_scan_time
+            LEFT JOIN users u ON s.worker_id = u.user_id
+            LEFT JOIN vessels v ON c.vessel_id = v.vessel_id
+            LEFT JOIN holding_areas ha ON c.holding_area_id = ha.holding_area_id
+            WHERE c.car_id = %s
+        ''', (car_id,))
+        updated_car = cur.fetchone()
+        
+        # Get previous scans
+        cur.execute('''
+            SELECT s.scan_time, u.full_name as worker_name, s.shift_number
+            FROM scans s
+            JOIN users u ON s.worker_id = u.user_id
+            WHERE s.car_id = %s AND s.worker_id != %s
+            ORDER BY s.scan_time DESC
+            LIMIT 3
+        ''', (car_id, user_id))
+        previous_scans = cur.fetchall()
+        
+        conn.close()
+        
+        scan_history = []
         for scan in previous_scans:
             time_ago = (now - scan['scan_time']).total_seconds() / 3600
-            if time_ago < 1:
-                time_str = f"{int(time_ago * 60)} min ago"
-            else:
-                time_str = f"{int(time_ago)}h ago"
+            time_str = f"{int(time_ago * 60)} min ago" if time_ago < 1 else f"{int(time_ago)}h ago"
             scan_history.append({
                 'worker': scan['worker_name'],
                 'shift': scan['shift_number'],
                 'time_ago': time_str
             })
-    
-    return jsonify({
-        'message': 'Scan recorded successfully', 
-        'car': dict(updated_car),
-        'previous_scans': scan_history,
-        'is_new': len(previous_scans) == 0 and car is None
-    })
+        
+        return jsonify({
+            'message': 'Scan recorded successfully', 
+            'car': dict(updated_car),
+            'previous_scans': scan_history,
+            'is_new': len(previous_scans) == 0 and car is None
+        })
+        
+    except Exception as e:
+        print(f"Scan error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
-# CAR DATA
+# GET CARS - FIXED
 @app.route('/api/cars', methods=['GET'])
 @token_required
 def get_cars(current_user):
-    shift = request.args.get('shift', type=int)
-    date_filter = request.args.get('date', datetime.now().date().isoformat())
-    status_filter = request.args.get('status')
-    
-    conn = get_db()
-    cur = conn.cursor()
-    
-    base_query = '''
-        SELECT DISTINCT c.*, 
-               (SELECT u.full_name FROM scans s 
-                JOIN users u ON s.worker_id = u.user_id 
-                WHERE s.car_id = c.car_id 
-                ORDER BY s.scan_time DESC LIMIT 1) as last_worker,
-               (SELECT s.worker_id FROM scans s 
-                WHERE s.car_id = c.car_id 
-                ORDER BY s.scan_time DESC LIMIT 1) as last_worker_id
-        FROM cars c
-        WHERE c.date = %s AND c.is_active = TRUE
-    '''
-    params = [date_filter]
-    
-    if current_user['role'] == 'worker':
-        # Workers only see cars THEY scanned (not entire shift)
-        base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.worker_id = %s)'
-        params.append(current_user['user_id'])
-    elif shift:
-        base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.shift_number = %s)'
-        params.append(shift)
-    
-    if status_filter:
-        base_query += ' AND c.status = %s'
-        params.append(status_filter)
-    
-    base_query += ' ORDER BY c.last_scan_time DESC'
-    
-    cur.execute(base_query, params)
-    cars = cur.fetchall()
-    conn.close()
-    return jsonify([dict(c) for c in cars])
+    try:
+        shift = request.args.get('shift', type=int)
+        date_filter = request.args.get('date', get_current_time().date().isoformat())
+        status_filter = request.args.get('status')
+        holding_only = request.args.get('holding_only', 'false').lower() == 'true'
+        
+        conn = get_db()
+        cur = conn.cursor()
+        
+        base_query = '''
+            SELECT DISTINCT c.*, 
+                   (SELECT u.full_name FROM scans s 
+                    JOIN users u ON s.worker_id = u.user_id 
+                    WHERE s.car_id = c.car_id 
+                    ORDER BY s.scan_time DESC LIMIT 1) as last_worker,
+                   (SELECT s.worker_id FROM scans s 
+                    WHERE s.car_id = c.car_id 
+                    ORDER BY s.scan_time DESC LIMIT 1) as last_worker_id,
+                   v.vessel_name, v.vessel_type,
+                   ha.area_name as holding_area_name
+            FROM cars c
+            LEFT JOIN vessels v ON c.vessel_id = v.vessel_id
+            LEFT JOIN holding_areas ha ON c.holding_area_id = ha.holding_area_id
+            WHERE c.date = %s AND c.is_active = TRUE
+        '''
+        
+        params = [date_filter]
+        
+        if holding_only:
+            base_query += ' AND c.is_in_holding = TRUE'
+        
+        if current_user['role'] == 'worker':
+            base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.worker_id = %s)'
+            params.append(current_user['user_id'])
+        elif shift:
+            base_query += ' AND EXISTS (SELECT 1 FROM scans s WHERE s.car_id = c.car_id AND s.shift_number = %s)'
+            params.append(shift)
+        
+        if status_filter:
+            base_query += ' AND c.status = %s'
+            params.append(status_filter)
+        
+        base_query += ' ORDER BY c.last_scan_time DESC'
+        
+        cur.execute(base_query, params)
+        cars = cur.fetchall()
+        conn.close()
+        return jsonify([dict(c) for c in cars])
+    except Exception as e:
+        print(f"Error getting cars: {e}")
+        return jsonify({'error': str(e)}), 500
 
+# DASHBOARD
 @app.route('/api/dashboard', methods=['GET'])
 @token_required
 def get_dashboard(current_user):
-    conn = get_db()
-    cur = conn.cursor()
-    today = datetime.now().date()
-    
-    if current_user['role'] == 'worker':
-        cur.execute('''
-            SELECT 
-                COUNT(DISTINCT c.car_id) as total_cars,
-                COUNT(DISTINCT CASE WHEN c.status = 'overdue' THEN c.car_id END) as overdue_cars,
-                COUNT(DISTINCT CASE WHEN c.status = 'warning' THEN c.car_id END) as warning_cars,
-                COUNT(DISTINCT CASE WHEN c.status = 'active' THEN c.car_id END) as active_cars,
-                COUNT(s.scan_id) as total_scans
-            FROM cars c
-            JOIN scans s ON c.car_id = s.car_id
-            WHERE s.shift_number = %s AND s.date = %s AND s.worker_id = %s
-        ''', (current_user['assigned_shift'], today, current_user['user_id']))
-    elif current_user['role'] == 'supervisor':
-        # Supervisors see ALL cars (not just their team)
-        cur.execute('''
-            SELECT 
-                COUNT(DISTINCT car_id) as total_cars,
-                COUNT(DISTINCT CASE WHEN status = 'overdue' THEN car_id END) as overdue_cars,
-                COUNT(DISTINCT CASE WHEN status = 'warning' THEN car_id END) as warning_cars,
-                COUNT(DISTINCT CASE WHEN status = 'active' THEN car_id END) as active_cars
-            FROM cars WHERE date = %s AND is_active = TRUE
-        ''', (today,))
-    else:
-        cur.execute('''
-            SELECT 
-                COUNT(DISTINCT car_id) as total_cars,
-                COUNT(DISTINCT CASE WHEN status = 'overdue' THEN car_id END) as overdue_cars,
-                COUNT(DISTINCT CASE WHEN status = 'warning' THEN car_id END) as warning_cars,
-                COUNT(DISTINCT CASE WHEN status = 'active' THEN car_id END) as active_cars
-            FROM cars WHERE date = %s AND is_active = TRUE
-        ''', (today,))
-    
-    stats = cur.fetchone()
-    
-    cur.execute('SELECT COUNT(*) as count FROM users WHERE is_active = TRUE AND role = %s', ('worker',))
-    worker_stats = cur.fetchone()
-    
-    conn.close()
-    return jsonify({**dict(stats), 'active_workers': worker_stats['count']})
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        today = get_current_time().date()
+        
+        if current_user['role'] == 'worker':
+            cur.execute('''
+                SELECT 
+                    COUNT(DISTINCT c.car_id) as total_cars,
+                    COUNT(DISTINCT CASE WHEN c.status = 'red' THEN c.car_id END) as overdue_cars,
+                    COUNT(DISTINCT CASE WHEN c.status = 'amber' THEN c.car_id END) as warning_cars,
+                    COUNT(DISTINCT CASE WHEN c.status = 'green' THEN c.car_id END) as active_cars
+                FROM cars c
+                JOIN scans s ON c.car_id = s.car_id
+                WHERE s.date = %s AND s.worker_id = %s
+            ''', (today, current_user['user_id']))
+        else:
+            cur.execute('''
+                SELECT 
+                    COUNT(DISTINCT car_id) as total_cars,
+                    COUNT(DISTINCT CASE WHEN status = 'red' THEN car_id END) as overdue_cars,
+                    COUNT(DISTINCT CASE WHEN status = 'amber' THEN car_id END) as warning_cars,
+                    COUNT(DISTINCT CASE WHEN status = 'green' THEN car_id END) as active_cars
+                FROM cars WHERE date = %s AND is_active = TRUE
+            ''', (today,))
+        
+        stats = cur.fetchone()
+        
+        cur.execute('SELECT COUNT(*) as count FROM users WHERE is_active = TRUE AND role = %s', ('worker',))
+        worker_stats = cur.fetchone()
+        
+        conn.close()
+        return jsonify({**dict(stats), 'active_workers': worker_stats['count']})
+    except Exception as e:
+        print(f"Dashboard error: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# EXCEL EXPORT
+# EXCEL EXPORT - FIXED with proper auth
 @app.route('/api/export', methods=['GET'])
 @token_required
 def export_excel(current_user):
     shift = request.args.get('shift', type=int)
     worker_id = request.args.get('worker_id', type=int)
-    date_filter = request.args.get('date', datetime.now().date().isoformat())
+    date_filter = request.args.get('date', get_current_time().date().isoformat())
     
     conn = get_db()
     cur = conn.cursor()
@@ -563,15 +624,15 @@ def export_excel(current_user):
     query = '''
         SELECT c.car_identifier, c.first_scan_time, c.last_scan_time, c.scan_count,
                c.status, c.date, u.full_name as worker_name, s.shift_number,
-               EXTRACT(EPOCH FROM (NOW() - c.first_scan_time))/3600 as hours_parked
+               EXTRACT(EPOCH FROM (c.last_scan_time - c.first_scan_time))/3600 as hours_parked
         FROM cars c
         JOIN scans s ON c.car_id = s.car_id
         JOIN users u ON s.worker_id = u.user_id
-        WHERE c.date = %s
+        WHERE c.date = %s AND (c.is_in_holding IS NULL OR c.is_in_holding = FALSE)
     '''
+    
     params = [date_filter]
     
-    # Workers only export THEIR scans
     if current_user['role'] == 'worker':
         query += ' AND s.worker_id = %s'
         params.append(current_user['user_id'])
@@ -587,13 +648,14 @@ def export_excel(current_user):
     
     cur.execute(query, params)
     data = cur.fetchall()
-    conn.close()    
+    conn.close()
+    
     wb = Workbook()
     ws = wb.active
     ws.title = "Parking Report"
     
-    headers = ['Car ID', 'First Scan', 'Last Scan', 'Scans', 'Hours Parked', 
-               'Status', 'Overdue By', 'Worker', 'Shift', 'Date']
+    headers = ['Car ID', 'First Scan', 'Last Scan', 'Time Difference', 'Scans', 
+               'Hours Parked', 'Status', 'Flag', 'Worker', 'Shift', 'Date']
     ws.append(headers)
     
     header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
@@ -605,46 +667,30 @@ def export_excel(current_user):
         cell.alignment = Alignment(horizontal='center')
     
     for row in data:
-        status_display = row['status'].upper()
-        first_scan_time = row['first_scan_time'].strftime('%I:%M %p')  # 10:30 AM
-        last_scan_time = row['last_scan_time'].strftime('%I:%M %p')   # 02:45 PM
+        hours_parked = row['hours_parked']
+        status_info = get_status_color(hours_parked)
         
-        # Calculate overdue time
-        overdue_display = ''
-        if row['hours_parked'] >= 12:
-            total_hours = int(row['hours_parked'])
-            hours = total_hours
-            minutes = int((row['hours_parked'] - total_hours) * 60)
-            overdue_display = f"🚨 {hours}h {minutes}m"
-        elif row['hours_parked'] >= 4:
-            total_hours = int(row['hours_parked'])
-            hours = total_hours
-            minutes = int((row['hours_parked'] - total_hours) * 60)
-            overdue_display = f"⚠️ {hours}h {minutes}m"
+        first_scan_time = row['first_scan_time'].strftime('%I:%M %p')
+        last_scan_time = row['last_scan_time'].strftime('%I:%M %p')
+        
+        time_diff = row['last_scan_time'] - row['first_scan_time']
+        hours = int(time_diff.total_seconds() // 3600)
+        minutes = int((time_diff.total_seconds() % 3600) // 60)
+        time_diff_str = f"{hours}h {minutes}m"
         
         ws.append([
             row['car_identifier'],
             first_scan_time,
             last_scan_time,
+            time_diff_str,
             f"{row['scan_count']}x",
-            f"{row['hours_parked']:.1f}h",
-            status_display,
-            overdue_display,
+            f"{hours_parked:.1f}h",
+            status_info['text'],
+            status_info['emoji'],
             row['worker_name'],
             f"Shift {row['shift_number']}",
             str(row['date'])
         ])
-    
-    # Color only the "Overdue By" column text (not the whole row)
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
-        overdue_col = row[6]  # "Overdue By" column (G)
-        
-        if overdue_col.value and '🚨' in str(overdue_col.value):
-            # 12+ hours - RED TEXT with bold
-            overdue_col.font = Font(color='FF0000', bold=True, size=12)
-        elif overdue_col.value and '⚠️' in str(overdue_col.value):
-            # 4-12 hours - ORANGE TEXT with bold
-            overdue_col.font = Font(color='FF8C00', bold=True, size=12)
     
     for col in ws.columns:
         max_length = 0
@@ -658,57 +704,114 @@ def export_excel(current_user):
     wb.save(output)
     output.seek(0)
     
-    filename = f"parking_report_{date_filter}"
-    if shift:
-        filename += f"_shift{shift}"
-    if worker_id:
-        filename += f"_worker{worker_id}"
-    filename += ".xlsx"
-    
+    filename = f"parking_report_{date_filter}.xlsx"
     return send_file(output, download_name=filename, as_attachment=True, 
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-@app.route('/api/leaderboard', methods=['GET'])
+# HOLDING AREA EXCEL EXPORT - FIXED
+@app.route('/api/export/holding', methods=['GET'])
 @token_required
-def get_leaderboard(current_user_id, user_role):
-    """Get worker leaderboard with scan counts"""
-    period = request.args.get('period', 'today')
+def export_holding_excel(current_user):
+    shift = request.args.get('shift', type=int)
+    date_filter = request.args.get('date', get_current_time().date().isoformat())
     
     conn = get_db()
     cur = conn.cursor()
     
-    # Build date filter based on period
-    if period == 'today':
-        date_filter = "AND DATE(s.scan_time) = CURRENT_DATE"
-    elif period == 'week':
-        date_filter = "AND s.scan_time >= CURRENT_DATE - INTERVAL '7 days'"
-    elif period == 'month':
-        date_filter = "AND s.scan_time >= CURRENT_DATE - INTERVAL '30 days'"
-    else:  # all time
-        date_filter = ""
+    query = '''
+        SELECT DISTINCT
+            c.car_identifier, 
+            c.first_scan_time,
+            c.last_scan_time, 
+            u.full_name as worker_name, 
+            EXTRACT(EPOCH FROM (c.last_scan_time - c.first_scan_time))/3600 as hours_parked,
+            v.vessel_name, 
+            v.vessel_type,
+            ha.area_name as holding_area_name,
+            c.stack_number,
+            c.status
+        FROM cars c
+        JOIN scans s ON c.car_id = s.car_id
+        JOIN users u ON s.worker_id = u.user_id
+        LEFT JOIN vessels v ON c.vessel_id = v.vessel_id
+        LEFT JOIN holding_areas ha ON c.holding_area_id = ha.holding_area_id
+        WHERE c.date = %s AND c.is_in_holding = TRUE
+    '''
     
-    query = f"""
-        SELECT 
-            u.user_id,
-            u.username,
-            u.full_name,
-            u.assigned_shift,
-            s2.full_name as supervisor_name,
-            COUNT(s.scan_id) as scan_count
-        FROM users u
-        LEFT JOIN scans s ON u.user_id = s.worker_id {date_filter}
-        LEFT JOIN users s2 ON u.supervisor_id = s2.user_id
-        WHERE u.role = 'worker' AND u.is_active = TRUE
-        GROUP BY u.user_id, u.username, u.full_name, u.assigned_shift, s2.full_name
-        ORDER BY scan_count DESC
-        LIMIT 20
-    """
+    params = [date_filter]
+    if shift:
+        query += ' AND s.shift_number = %s'
+        params.append(shift)
     
-    cur.execute(query)
-    leaderboard = cur.fetchall()
+    query += ' ORDER BY c.first_scan_time'
+    
+    cur.execute(query, params)
+    data = cur.fetchall()
     conn.close()
     
-    return jsonify(leaderboard)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Holding Area"
+    
+    headers = ['Car ID', 'Vessel', 'Area', 'Unit', 'Worker', 'Time', 'Hours', 'Status']
+    ws.append(headers)
+    
+    header_fill = PatternFill(start_color='f59e0b', end_color='f59e0b', fill_type='solid')
+    header_font = Font(bold=True, color='FFFFFF')
+    
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center')
+    
+    for row in data:
+        hours_parked = row['hours_parked'] or 0
+        status_info = get_status_color(hours_parked)
+        
+        scan_time = row['last_scan_time'].strftime('%I:%M %p')
+        vessel = f"{row['vessel_name']} ({row['vessel_type']})" if row['vessel_name'] else '-'
+        
+        ws.append([
+            row['car_identifier'],
+            vessel,
+            row['holding_area_name'] or '-',
+            row['stack_number'] or '-',
+            row['worker_name'],
+            scan_time,
+            f"{hours_parked:.1f}h",
+            f"{status_info['emoji']} {status_info['text']}"
+        ])
+    
+    for col in ws.columns:
+        max_length = 0
+        column = col[0].column_letter
+        for cell in col:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        ws.column_dimensions[column].width = max_length + 2
+    
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    filename = f"holding_area_{date_filter}.xlsx"
+    return send_file(output, download_name=filename, as_attachment=True, 
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-if __name__ == '__main__':
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({'error': 'Not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    print(f"Internal error: {e}")
+    return jsonify({'error': 'Internal server error'}), 500
+
+if __name__ == '__main__':  
+    print("=" * 60)
+    print("🚀 M Scanner - FIXED VERSION")
+    print("=" * 60)
+    print("📡 Server: http://localhost:5000")
+    print("🔐 Login: admin / admin123")
+    print("=" * 60)
     app.run(debug=True, host='0.0.0.0', port=5000)

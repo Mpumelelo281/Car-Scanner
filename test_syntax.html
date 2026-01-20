@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Syntax Test</title>
+</head>
+<body>
+    <h1>Loading app.js...</h1>
+    <div id="result">Attempting to load</div>
+    <script>
+        try {
+            const script = document.createElement('script');
+            script.src = '/static/js/app.js';
+            script.onload = function() {
+                document.getElementById('result').innerHTML = '<span style="color: green;">✓ app.js loaded successfully!</span>';
+            };
+            script.onerror = function(e) {
+                document.getElementById('result').innerHTML = '<span style="color: red;">✗ Failed to load app.js: ' + e + '</span>';
+            };
+            document.body.appendChild(script);
+        } catch (e) {
+            document.getElementById('result').innerHTML = '<span style="color: red;">✗ Error: ' + e.message + '</span>';
+        }
+    </script>
+</body>
+</html>
